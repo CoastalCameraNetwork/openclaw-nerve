@@ -20,7 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/daggerhashimoto/openclaw-nerve/mast
 
 You can already chat with your OpenClaw agent through webchat, Telegram, WhatsApp, Discord. Nerve is what you open when chatting isn't enough.
 
-Nerve is a self-hosted web UI for [OpenClaw](https://github.com/openclaw/openclaw) AI agents. Voice conversations, live workspace editing, inline charts, cron scheduling, and full token-level visibility. One install script. Running in 30 seconds. Open source, MIT licensed.
+Nerve is a self-hosted web UI for [OpenClaw](https://github.com/openclaw/openclaw) AI agents. Voice conversations, live workspace editing, inline charts, cron scheduling, and full token-level visibility. One install script. Running in 30 seconds.
 
 ## Why Nerve?
 
@@ -35,13 +35,13 @@ Messaging channels are great for chatting. But you can't watch charts render in 
 ## What makes it different
 
 ### Voice that actually works
-Talk to your agent. It talks back. Wake-word activation, on-device Whisper transcription with model selection (tiny, base, small) and GPU detection — no API key needed. Multi-provider TTS with Edge, OpenAI, and Replicate. Not a gimmick, a daily driver.
+Talk to your agent. It talks back. Wake-word activation, on-device Whisper transcription with model selection (tiny, base, small) and GPU detection. No API key needed. Multi-provider TTS with Edge, OpenAI, and Replicate.
+
+### Full workspace visibility
+Your sub-agent sessions, workspace files, memory, config, tools. All visible, all editable, all live. No file hunting, no guessing what it remembers.
 
 ### Live charts from a chat message
 Your agent can drop interactive TradingView charts, candlestick plots, and data visualizations directly into the conversation. Say "show me gold this year" and get a real chart, not a code block.
-
-### Full workspace visibility
-Your agent's memory, personality, tools, daily logs. All visible, all editable, all live. Change SOUL.md while it's mid-conversation. No restarts, no file hunting, no guessing what it remembers.
 
 ### Cron and scheduling from the UI
 Create recurring jobs and one-shot reminders. Every scheduled run shows up as its own session in the sidebar. You can watch it execute live, read the full transcript, and see exactly what it did.
@@ -103,7 +103,7 @@ Browser ─── Nerve (:3080) ─── OpenClaw Gateway (:18789)
   └─ REST ────┘  files, memories, TTS, models
 ```
 
-Nerve proxies WebSocket traffic to your gateway and adds its own REST layer for voice, memory, and monitoring.
+Nerve proxies WebSocket traffic to your gateway and adds its own REST layer.
 
 **Frontend:** React 19 · Tailwind CSS 4 · shadcn/ui · Vite 7
 **Backend:** Hono 4 on Node.js
