@@ -10,6 +10,22 @@
 # ──────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
+# ── Cleanup trap ──────────────────────────────────────────────────────
+TEMP_FILES=()
+RWD_PIDS=()
+
+cleanup() {
+  # Kill any lingering run_with_dots background processes
+  for pid in "${RWD_PIDS[@]}"; do
+    kill "$pid" 2>/dev/null || true
+  done
+  # Remove temp files and directories (stderr captures, build backups)
+  for f in "${TEMP_FILES[@]}"; do
+    rm -rf "$f" 2>/dev/null || true
+  done
+}
+trap cleanup EXIT
+
 # ── Defaults ──────────────────────────────────────────────────────────
 INSTALL_DIR="${NERVE_INSTALL_DIR:-${HOME}/nerve}"
 BRANCH="master"
@@ -54,9 +70,13 @@ cmd()  { echo -e "  ${RAIL}    ${CYAN}\$ $1${NC}"; }
 # Sets RWD_EXIT to the command's exit code after completion.
 run_with_dots() {
   local msg="$1"; shift
+  local stderr_file
+  stderr_file=$(mktemp /tmp/nerve-rwd-XXXXXX)
+  TEMP_FILES+=("$stderr_file")
   printf "  ${RAIL}  ${CYAN}→${NC} %s " "$msg"
-  "$@" &
+  "$@" 2>"$stderr_file" &
   local pid=$!
+  RWD_PIDS+=("$pid")
   while kill -0 "$pid" 2>/dev/null; do
     printf "."
     sleep 1
@@ -64,6 +84,12 @@ run_with_dots() {
   wait "$pid"
   RWD_EXIT=$?
   echo ""
+  if [[ $RWD_EXIT -ne 0 && -s "$stderr_file" ]]; then
+    echo -e "  ${RAIL}  ${RED}stderr:${NC}"
+    while IFS= read -r line; do
+      echo -e "  ${RAIL}    ${DIM}${line}${NC}"
+    done < "$stderr_file"
+  fi
   return $RWD_EXIT
 }
 
@@ -431,6 +457,15 @@ else
   run_with_dots "Installing dependencies" bash -c "npm ci --loglevel=error > '$npm_log' 2>&1"
   if [[ $RWD_EXIT -eq 0 ]]; then
     ok "Dependencies installed"
+
+    # Back up existing build outputs for rollback on failure
+    BUILD_BACKUP=""
+    if [[ -d dist || -d server-dist ]]; then
+      BUILD_BACKUP=$(mktemp -d /tmp/nerve-build-backup-XXXXXX)
+      TEMP_FILES+=("$BUILD_BACKUP")
+      [[ -d dist ]] && cp -a dist "$BUILD_BACKUP/dist"
+      [[ -d server-dist ]] && cp -a server-dist "$BUILD_BACKUP/server-dist"
+    fi
   else
     fail "npm ci failed"
     echo ""
@@ -479,6 +514,13 @@ else
     ok "Client built"
   else
     fail "Client build failed"
+    # Rollback to previous build output if available
+    if [[ -n "${BUILD_BACKUP:-}" ]]; then
+      rm -rf dist server-dist 2>/dev/null
+      [[ -d "$BUILD_BACKUP/dist" ]] && cp -a "$BUILD_BACKUP/dist" dist
+      [[ -d "$BUILD_BACKUP/server-dist" ]] && cp -a "$BUILD_BACKUP/server-dist" server-dist
+      warn "Restored previous build output"
+    fi
     echo ""
     echo -e "  ${RAIL}  ${DIM}── Last 10 lines ──${NC}"
     tail -10 "$build_log" | while IFS= read -r line; do
@@ -498,6 +540,13 @@ else
     ok "Server built"
   else
     fail "Server build failed"
+    # Rollback to previous build output if available
+    if [[ -n "${BUILD_BACKUP:-}" ]]; then
+      rm -rf dist server-dist 2>/dev/null
+      [[ -d "$BUILD_BACKUP/dist" ]] && cp -a "$BUILD_BACKUP/dist" dist
+      [[ -d "$BUILD_BACKUP/server-dist" ]] && cp -a "$BUILD_BACKUP/server-dist" server-dist
+      warn "Restored previous build output"
+    fi
     echo ""
     echo -e "  ${RAIL}  ${DIM}── Last 10 lines ──${NC}"
     tail -10 "$build_log" | while IFS= read -r line; do
@@ -660,12 +709,18 @@ setup_systemd() {
   local install_user="${SUDO_USER:-${USER}}"
   local install_home="${HOME}"
   
-  # If running via sudo, get the real user's home
+  # If running via sudo, get the real user's home (no eval — safe from injection)
   if [[ -n "${SUDO_USER:-}" ]]; then
     if command -v getent &>/dev/null; then
       install_home=$(getent passwd "${SUDO_USER}" | cut -d: -f6)
+    elif command -v dscl &>/dev/null; then
+      install_home=$(dscl . -read "/Users/${SUDO_USER}" NFSHomeDirectory 2>/dev/null | awk '{print $2}')
     else
-      install_home=$(eval echo "~${SUDO_USER}")
+      install_home=$(awk -F: -v user="${SUDO_USER}" '$1 == user {print $6}' /etc/passwd)
+    fi
+    # Fallback if all lookups returned empty
+    if [[ -z "$install_home" ]]; then
+      install_home="/home/${SUDO_USER}"
     fi
   fi
   
