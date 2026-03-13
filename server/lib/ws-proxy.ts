@@ -26,6 +26,7 @@ import { verifySession, parseSessionCookie } from './session.js';
 import { createDeviceBlock, getDeviceIdentity } from './device-identity.js';
 import { resolveOpenclawBin } from './openclaw-bin.js';
 import { canInjectGatewayToken } from './trust-utils.js';
+import { isAllowedOrigin } from './origin-utils.js';
 
 /** @internal — exported for test overrides */
 export const _internals = { challengeTimeoutMs: 5_000 };
@@ -91,6 +92,13 @@ export function setupWebSocketProxy(server: HttpServer | HttpsServer): void {
 
   server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     if (req.url?.startsWith('/ws')) {
+      const originHeader = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin;
+      if (!isAllowedOrigin(originHeader)) {
+        socket.write('HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\nOrigin not allowed');
+        socket.destroy();
+        return;
+      }
+
       // Auth check for WebSocket connections
       if (config.auth) {
         const token = parseSessionCookie(req.headers.cookie, SESSION_COOKIE_NAME);
@@ -142,7 +150,8 @@ export function setupWebSocketProxy(server: HttpServer | HttpsServer): void {
 
     const isEncrypted = !!(req.socket as unknown as { encrypted?: boolean }).encrypted;
     const scheme = isEncrypted ? 'https' : 'http';
-    const clientOrigin = req.headers.origin || `${scheme}://${req.headers.host}`;
+    const clientOrigin = (Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin)
+      || `${scheme}://${req.headers.host}`;
 
     // Determine if the client is trusted enough for token injection.
     // canInjectGatewayToken accounts for both auth state and loopback detection (proxy-aware).

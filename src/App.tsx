@@ -7,7 +7,7 @@
  */
 import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react';
 import { AlertTriangle, CheckCircle2, RotateCw } from 'lucide-react';
-import { useGateway, loadConfig } from '@/contexts/GatewayContext';
+import { useGateway } from '@/contexts/GatewayContext';
 import { useSessionContext } from '@/contexts/SessionContext';
 import { useChat } from '@/contexts/ChatContext';
 import { useSettings, type STTInputMode } from '@/contexts/SettingsContext';
@@ -23,7 +23,7 @@ import { ChatPanel, type ChatPanelHandle } from '@/features/chat/ChatPanel';
 import type { TTSProvider } from '@/features/tts/useTTS';
 import type { ViewMode } from '@/features/command-palette/commands';
 import { ResizablePanels } from '@/components/ResizablePanels';
-import { getContextLimit, DEFAULT_GATEWAY_WS } from '@/lib/constants';
+import { getContextLimit } from '@/lib/constants';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { createCommands } from '@/features/command-palette/commands';
 import { PanelErrorBoundary } from '@/components/PanelErrorBoundary';
@@ -85,6 +85,7 @@ export default function App({ onLogout }: AppProps) {
   const {
     dialogOpen,
     editableUrl, setEditableUrl,
+    officialUrl,
     editableToken, setEditableToken,
     handleConnect, handleReconnect,
     serverSideAuth,
@@ -381,9 +382,6 @@ export default function App({ onLogout }: AppProps) {
     setSttModel(model);
   }, [setSttModel]);
 
-  const savedConfig = useMemo(() => loadConfig(), []);
-  const defaultUrl = savedConfig.url || DEFAULT_GATEWAY_WS;
-
   const chatContent = (
     <TabbedContentArea
       activeTab={activeTab}
@@ -502,8 +500,9 @@ export default function App({ onLogout }: AppProps) {
         open={dialogOpen && connectionState !== 'connected' && connectionState !== 'reconnecting'}
         onConnect={handleConnect}
         error={connectError}
-        defaultUrl={defaultUrl}
+        defaultUrl={editableUrl}
         defaultToken={editableToken}
+        officialUrl={officialUrl}
         serverSideAuth={serverSideAuth}
       />
 

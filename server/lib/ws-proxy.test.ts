@@ -10,6 +10,9 @@ vi.mock('./config.js', () => {
   return {
     config: {
       auth: false,
+      host: '127.0.0.1',
+      port: 3080,
+      sslPort: 3443,
       sessionSecret: 'test-secret',
       gatewayToken: 'test-token',
     },
@@ -178,6 +181,16 @@ describe('ws-proxy', () => {
       const { code } = await waitForCloseOrError(ws);
       // Socket gets destroyed = abnormal close
       expect(code).toBe(1006);
+    });
+
+    it('rejects websocket upgrades from disallowed browser origins', async () => {
+      const ws = new WebSocket(
+        `ws://127.0.0.1:${proxyPort}/ws?target=${encodeURIComponent(mockGw.url + '/ws')}`,
+        { origin: 'https://evil.example' },
+      );
+      const { code, reason } = await waitForCloseOrError(ws);
+      expect(code).toBe(1006);
+      expect(reason).toContain('Unexpected server response: 403');
     });
   });
 
