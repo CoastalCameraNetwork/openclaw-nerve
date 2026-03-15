@@ -410,10 +410,11 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
         const tasksData = await tasksResponse.json();
         const allTasks = tasksData.items || tasksData.tasks || [];
         
-        // Get active sessions
-        const orchestratedTasks = allTasks.filter((t: any) => 
-          t.labels?.includes('orchestrated') && t.run && t.run.status === 'running'
-        );
+        // Get active sessions - tasks with agent labels that are running
+        const orchestratedTasks = allTasks.filter((t: any) => {
+          const hasAgents = t.labels?.some((l: string) => l.startsWith('agent:'));
+          return hasAgents && t.run && t.run.status === 'running';
+        });
         
         // Get time window for stats
         const timeWindow = getTimeWindow();
