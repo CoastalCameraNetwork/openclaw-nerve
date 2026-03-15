@@ -57,4 +57,16 @@ export interface KanbanTask {
   estimateMin?: number;
   actualMin?: number;
   feedback: TaskFeedback[];
+  
+  // GitHub PR integration
+  pr?: {
+    number: number;
+    url: string;
+    branch: string;
+    status: 'open' | 'closed' | 'merged' | 'draft';
+    reviewComments?: number;
+    commits?: number;
+    createdAt?: number;
+    updatedAt?: number;
+  };
 }

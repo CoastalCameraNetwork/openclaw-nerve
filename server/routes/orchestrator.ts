@@ -494,3 +494,86 @@ app.get('/api/orchestrator/task/:id/sessions', rateLimitGeneral, async (c) => {
 
 
 export default app;
+
+/**
+ * POST /api/orchestrator/task/:id/pr
+ * Create a PR for a task (commits changes and opens PR)
+ */
+app.post('/api/orchestrator/task/:id/pr', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const store = getKanbanStore();
+    const task = await store.getTask(taskId);
+    
+    if (!task) {
+      return c.json({ error: 'Task not found' }, 404);
+    }
+    
+    // Detect project for working directory
+    const { detectProject } = await import('../lib/project-registry.js');
+    const project = detectProject(task.description || task.title, task.labels || []);
+    
+    if (!project) {
+      return c.json({ error: 'Cannot create PR: No project detected. Add project:label to task.' }, 400);
+    }
+    
+    // Complete Git workflow
+    const { completeGitWorkflow } = await import('../services/github-pr.js');
+    const pr = await completeGitWorkflow(
+      taskId,
+      task.title,
+      task.description || '',
+      project.localPath
+    );
+    
+    // Update task with PR info
+    const updatedTask = await store.updateTask(taskId, task.version, {
+      pr: pr as any,
+      status: 'review',
+    });
+    
+    return c.json({ success: true, pr, task: updatedTask });
+  } catch (error) {
+    console.error('Failed to create PR:', error);
+    return c.json({ error: 'Failed to create PR', details: (error as Error).message }, 500);
+  }
+});
+
+/**
+ * GET /api/orchestrator/pr/:number
+ * Get PR status and comments
+ */
+app.get('/api/orchestrator/pr/:number', rateLimitGeneral, async (c) => {
+  try {
+    const prNumber = parseInt(c.req.param('number'));
+    const { getPRStatus, getPRComments } = await import('../services/github-pr.js');
+    
+    const [pr, comments] = await Promise.all([
+      getPRStatus(prNumber),
+      getPRComments(prNumber),
+    ]);
+    
+    return c.json({ success: true, pr, comments });
+  } catch (error) {
+    console.error('Failed to get PR status:', error);
+    return c.json({ error: 'Failed to get PR status' }, 500);
+  }
+});
+
+/**
+ * POST /api/orchestrator/pr/:number/merge
+ * Merge a PR
+ */
+app.post('/api/orchestrator/pr/:number/merge', rateLimitGeneral, async (c) => {
+  try {
+    const prNumber = parseInt(c.req.param('number'));
+    const { mergePR } = await import('../services/github-pr.js');
+    
+    await mergePR(prNumber);
+    
+    return c.json({ success: true, message: 'PR merged successfully' });
+  } catch (error) {
+    console.error('Failed to merge PR:', error);
+    return c.json({ error: 'Failed to merge PR' }, 500);
+  }
+});
