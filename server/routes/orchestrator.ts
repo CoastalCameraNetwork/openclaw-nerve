@@ -577,3 +577,62 @@ app.post('/api/orchestrator/pr/:number/merge', rateLimitGeneral, async (c) => {
     return c.json({ error: 'Failed to merge PR' }, 500);
   }
 });
+
+/**
+ * POST /api/orchestrator/task/:id/review
+ * Run automated PR review using specialist agents
+ */
+app.post('/api/orchestrator/task/:id/review', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const store = getKanbanStore();
+    const task = await store.getTask(taskId);
+    
+    if (!task) {
+      return c.json({ error: 'Task not found' }, 404);
+    }
+    
+    if (!task.pr) {
+      return c.json({ error: 'Task has no PR' }, 400);
+    }
+    
+    // Detect project type
+    const { detectProject } = await import('../lib/project-registry.js');
+    const project = detectProject(task.description || task.title, task.labels || []);
+    
+    // Run automated review
+    const { runAutomatedPRReview } = await import('../services/pr-review.js');
+    const report = await runAutomatedPRReview(
+      taskId,
+      task.pr.number,
+      project?.type
+    );
+    
+    // Post comments to PR
+    const { postReviewCommentsToPR } = await import('../services/pr-review.js');
+    await postReviewCommentsToPR(task.pr.number, report);
+    
+    // If review passed, move to REVIEW status
+    // If failed, keep in in-progress for fixes
+    if (report.passed) {
+      await store.updateTask(taskId, task.version, {
+        status: 'review',
+      });
+    }
+    
+    return c.json({ success: true, report, taskStatus: report.passed ? 'review' : 'in-progress' });
+  } catch (error) {
+    console.error('Failed to run PR review:', error);
+    return c.json({ error: 'Failed to run PR review' }, 500);
+  }
+});
+
+/**
+ * GET /api/orchestrator/task/:id/review
+ * Get latest PR review report
+ */
+app.get('/api/orchestrator/task/:id/review', rateLimitGeneral, async (c) => {
+  // Would retrieve stored review report from task metadata
+  // For now, return placeholder
+  return c.json({ success: true, message: 'Review endpoint ready' });
+});
