@@ -11,8 +11,16 @@
  */
 
 import { memo, useEffect, useState, useCallback } from 'react';
-import { Cpu, Clock, CheckCircle2, Loader2, Users, Activity, DollarSign, TrendingUp } from 'lucide-react';
+import { Cpu, Clock, CheckCircle2, Loader2, Users, Activity, DollarSign, TrendingUp, Calendar } from 'lucide-react';
 import { useAgents } from './useOrchestrator';
+
+export type TimeRangeOption = 'today-local' | '24h-rolling' | 'today-utc';
+
+export const TIME_RANGE_OPTIONS: { value: TimeRangeOption; label: string; description: string }[] = [
+  { value: 'today-local', label: 'Today (Local)', description: 'Since 12:00 AM local time' },
+  { value: '24h-rolling', label: 'Last 24 Hours', description: 'Rolling 24-hour window' },
+  { value: 'today-utc', label: 'Today (UTC)', description: 'Since 12:00 AM UTC' },
+];
 
 interface DashboardSession {
   taskId: string;
@@ -293,14 +301,46 @@ function StatCard({
 export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
   const [sessions, setSessions] = useState<DashboardSession[]>([]);
   const [loading, setLoading] = useState(true);
+  const [timeRange, setTimeRange] = useState<TimeRangeOption>('today-local');
   const [stats, setStats] = useState({
     activeAgents: 0,
-    completedToday: 0,
+    completedInPeriod: 0,
     totalTasks: 0,
     avgDuration: '0m',
   });
 
   const { agents: allAgents } = useAgents();
+
+  // Calculate time window based on selected range
+  const getTimeWindow = useCallback((): { start: number; end: number; label: string } => {
+    const now = Date.now();
+    let start: number;
+    let label: string;
+
+    switch (timeRange) {
+      case 'today-local': {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        start = today.getTime();
+        label = 'Today (Local)';
+        break;
+      }
+      case '24h-rolling': {
+        start = now - (24 * 60 * 60 * 1000);
+        label = 'Last 24 Hours';
+        break;
+      }
+      case 'today-utc': {
+        const todayUTC = new Date();
+        todayUTC.setUTCHours(0, 0, 0, 0);
+        start = todayUTC.getTime();
+        label = 'Today (UTC)';
+        break;
+      }
+    }
+
+    return { start, end: now, label };
+  }, [timeRange]);
 
   // Fetch active sessions from both kanban tasks and gateway subagents
   const fetchSessions = useCallback(async () => {
@@ -313,9 +353,44 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
       if (tasksResponse.ok) {
         const tasksData = await tasksResponse.json();
         const allTasks = tasksData.items || tasksData.tasks || [];
+        
+        // Get active sessions
         const orchestratedTasks = allTasks.filter((t: any) => 
           t.labels?.includes('orchestrated') && t.run && t.run.status === 'running'
         );
+        
+        // Get time window for stats
+        const timeWindow = getTimeWindow();
+        
+        // Calculate completed tasks in time window
+        const completedTasks = allTasks.filter((t: any) => 
+          t.run && 
+          (t.run.status === 'done' || t.run.status === 'completed') &&
+          t.run.endedAt && 
+          t.run.endedAt >= timeWindow.start
+        );
+        
+        // Calculate average duration from completed tasks
+        let avgDurationMs = 0;
+        if (completedTasks.length > 0) {
+          const durations = completedTasks
+            .filter((t: any) => t.run.startedAt && t.run.endedAt)
+            .map((t: any) => t.run.endedAt - t.run.startedAt);
+          avgDurationMs = durations.length > 0 
+            ? durations.reduce((a: number, b: number) => a + b, 0) / durations.length 
+            : 0;
+        }
+        
+        function formatDuration(ms: number): string {
+          const seconds = Math.floor(ms / 1000);
+          if (seconds < 60) return `${seconds}s`;
+          const minutes = Math.floor(seconds / 60);
+          const remainingSeconds = seconds % 60;
+          if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
+          const hours = Math.floor(minutes / 60);
+          const remainingMinutes = minutes % 60;
+          return `${hours}h ${remainingMinutes}m`;
+        }
         
         // Fetch actual subagent sessions from gateway
         const sessionsResponse = await fetch('/api/orchestrator/sessions', {
@@ -340,23 +415,13 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
               s.label && s.label.includes(agentName)
             );
             
-            // Add sample output for demo if no real output
-            let sampleOutput = undefined;
-            if (!session?.output) {
-              if (agentName === 'security-reviewer') {
-                sampleOutput = 'Scanning mgmt codebase for security vulnerabilities... Found 3 potential issues in auth middleware.';
-              } else if (agentName === 'mgmt-agent') {
-                sampleOutput = 'Analyzing Derek\'s workflow notes and client onboarding process...';
-              }
-            }
-            
             return {
               name: agentName,
               status: session 
                 ? (session.status === 'running' ? 'running' as const : session.status === 'done' ? 'completed' as const : 'failed' as const)
                 : 'running' as const,
               elapsed: session?.createdAt ? Date.now() - session.createdAt : Date.now() - task.run.startedAt,
-              output: session?.output || sampleOutput,
+              output: session?.output,
               error: session?.error,
             };
           });
@@ -377,12 +442,12 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
         
         setSessions(dashboardSessions);
         
-        // Update stats
+        // Update stats with real data
         setStats({
           activeAgents: dashboardSessions.reduce((sum, s) => sum + s.agents.filter(a => a.status === 'running').length, 0),
-          completedToday: 0,
+          completedInPeriod: completedTasks.length,
           totalTasks: dashboardSessions.length,
-          avgDuration: '2m 15s',
+          avgDuration: avgDurationMs > 0 ? formatDuration(avgDurationMs) : '—',
         });
       }
     } catch (err) {
@@ -390,7 +455,7 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [getTimeWindow]);
 
   useEffect(() => {
     fetchSessions();
@@ -420,6 +485,23 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
             Real-time agent collaboration monitoring
           </p>
         </div>
+        
+        {/* Time Range Selector */}
+        <div className="flex items-center gap-2">
+          <Calendar size={14} className="text-muted-foreground" />
+          <select
+            value={timeRange}
+            onChange={(e) => setTimeRange(e.target.value as TimeRangeOption)}
+            className="h-8 px-2 text-xs bg-background border border-input rounded-md focus:outline-none focus:ring-2 focus:ring-ring"
+            title="Select time range for statistics"
+          >
+            {TIME_RANGE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       {/* Stats Row */}
@@ -432,9 +514,8 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
         />
         <StatCard
           icon={CheckCircle2}
-          label="Completed Today"
-          value={stats.completedToday}
-          trend="+12%"
+          label={`Completed (${getTimeWindow().label})`}
+          value={stats.completedInPeriod}
           color="#22c55e"
         />
         <StatCard
