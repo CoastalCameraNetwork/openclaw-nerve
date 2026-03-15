@@ -12,6 +12,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createMutex } from './mutex.js';
+import { routeTask } from './agent-registry.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -214,22 +215,6 @@ const STATUS_ORDER: Record<TaskStatus, number> = {
   cancelled: 5,
 };
 
-const VALID_TASK_STATUSES = new Set<TaskStatus>(['backlog', 'todo', 'in-progress', 'review', 'done', 'cancelled']);
-const VALID_TASK_PRIORITIES = new Set<TaskPriority>(['critical', 'high', 'normal', 'low']);
-
-function normalizeTaskStatus(value: unknown): TaskStatus {
-  return typeof value === 'string' && VALID_TASK_STATUSES.has(value as TaskStatus)
-    ? (value as TaskStatus)
-    : DEFAULT_CONFIG.defaults.status;
-}
-
-function normalizeTaskPriority(value: unknown): TaskPriority {
-  if (value === 'medium') return 'normal';
-  return typeof value === 'string' && VALID_TASK_PRIORITIES.has(value as TaskPriority)
-    ? (value as TaskPriority)
-    : DEFAULT_CONFIG.defaults.priority;
-}
-
 const DEFAULT_CONFIG: KanbanBoardConfig = {
   columns: [
     { key: 'backlog', title: 'Backlog', visible: true },
@@ -333,8 +318,6 @@ export class KanbanStore {
     if (!data.config.defaults || !data.config.defaults.status) {
       data.config.defaults = structuredClone(DEFAULT_CONFIG.defaults);
     }
-    data.config.defaults.status = normalizeTaskStatus(data.config.defaults.status);
-    data.config.defaults.priority = normalizeTaskPriority(data.config.defaults.priority);
     if (!data.config.proposalPolicy) {
       data.config.proposalPolicy = 'confirm';
     }
@@ -347,11 +330,6 @@ export class KanbanStore {
     if (data.config.quickViewLimit === undefined) {
       data.config.quickViewLimit = DEFAULT_CONFIG.quickViewLimit;
     }
-    data.tasks = data.tasks.map((task) => ({
-      ...task,
-      status: normalizeTaskStatus(task.status),
-      priority: normalizeTaskPriority(task.priority),
-    }));
     data.meta.schemaVersion = CURRENT_SCHEMA_VERSION;
     return data;
   }
@@ -975,10 +953,24 @@ export class KanbanStore {
       const data = await this.readRaw();
       const now = Date.now();
 
+      // For 'create' proposals, add suggested agents based on routing
+      let payloadWithSuggestions = input.payload;
+      let suggestedAgents: string[] | undefined;
+      if (input.type === 'create') {
+        const payload = input.payload as { description?: string; title?: string };
+        const routing = routeTask(payload.description || payload.title || '');
+        suggestedAgents = routing.agents;
+        payloadWithSuggestions = {
+          ...input.payload,
+          suggestedAgents: routing.agents,
+          suggestedSequence: routing.sequence,
+        };
+      }
+
       const proposal: KanbanProposal = {
         id: crypto.randomUUID(),
         type: input.type,
-        payload: input.payload,
+        payload: payloadWithSuggestions,
         sourceSessionKey: input.sourceSessionKey,
         proposedBy: input.proposedBy,
         proposedAt: now,
@@ -989,7 +981,7 @@ export class KanbanStore {
       // In auto mode, immediately execute the proposal
       if (data.config.proposalPolicy === 'auto') {
         if (input.type === 'create') {
-          const task = await this._createTaskUnlocked(data, input.payload, input.proposedBy);
+          const task = await this._createTaskUnlocked(data, payloadWithSuggestions, input.proposedBy);
           proposal.status = 'approved';
           proposal.resolvedAt = now;
           proposal.resolvedBy = input.proposedBy;
@@ -1024,7 +1016,22 @@ export class KanbanStore {
       let task: KanbanTask;
 
       if (proposal.type === 'create') {
-        task = await this._createTaskUnlocked(data, proposal.payload, proposal.proposedBy);
+        // Use suggested agents from proposal if available, otherwise run routing
+        const payload = proposal.payload as { description?: string; title?: string; suggestedAgents?: string[]; labels?: string[] };
+        const agentsToUse = payload.suggestedAgents || 
+          routeTask(payload.description || payload.title || '').agents;
+        
+        // Add agent labels to the payload if not already present
+        const existingLabels = payload.labels || [];
+        const agentLabels = agentsToUse.map((a: string) => `agent:${a}`);
+        const allLabels = [...existingLabels, ...agentLabels];
+        
+        const payloadWithAgents = {
+          ...proposal.payload,
+          labels: allLabels,
+        };
+        
+        task = await this._createTaskUnlocked(data, payloadWithAgents, proposal.proposedBy);
         proposal.resultTaskId = task.id;
       } else {
         task = await this._applyUpdateUnlocked(data, proposal.payload);
