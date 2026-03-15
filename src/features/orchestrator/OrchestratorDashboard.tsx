@@ -410,10 +410,14 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
         const tasksData = await tasksResponse.json();
         const allTasks = tasksData.items || tasksData.tasks || [];
         
-        // Get active sessions - tasks with agent labels that are running
+        // Get active sessions - tasks with agent labels that are in-progress or running
+        // Note: run.status can be 'running', 'done', 'error', 'aborted'
+        // Task status can be 'todo', 'in-progress', 'review', 'done', 'cancelled'
         const orchestratedTasks = allTasks.filter((t: any) => {
           const hasAgents = t.labels?.some((l: string) => l.startsWith('agent:'));
-          return hasAgents && t.run && t.run.status === 'running';
+          const isInProgress = t.status === 'in-progress';
+          const isRunActive = t.run && ['running', 'done', 'error'].includes(t.run.status);
+          return hasAgents && (isInProgress || isRunActive);
         });
         
         // Get time window for stats
@@ -472,14 +476,26 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
               s.label && s.label.includes(agentName)
             );
             
+            // Determine status based on task run status and session status
+            let status: 'pending' | 'running' | 'completed' | 'failed' = 'pending';
+            if (session) {
+              status = session.status === 'running' ? 'running' : 
+                       session.status === 'done' ? 'completed' : 
+                       session.status === 'error' ? 'failed' : 'pending';
+            } else if (task.run?.status === 'done') {
+              status = 'completed';
+            } else if (task.run?.status === 'error') {
+              status = 'failed';
+            } else if (task.run?.status === 'running' || task.status === 'in-progress') {
+              status = 'running'; // Task is active even if session not found
+            }
+            
             return {
               name: agentName,
-              status: session 
-                ? (session.status === 'running' ? 'running' as const : session.status === 'done' ? 'completed' as const : 'failed' as const)
-                : 'running' as const,
-              elapsed: session?.createdAt ? Date.now() - session.createdAt : Date.now() - task.run.startedAt,
-              output: session?.output,
-              error: session?.error,
+              status,
+              elapsed: session?.createdAt ? Date.now() - session.createdAt : Date.now() - (task.run?.startedAt || Date.now()),
+              output: session?.output || task.run?.output,
+              error: session?.error || task.run?.error,
             };
           });
           
