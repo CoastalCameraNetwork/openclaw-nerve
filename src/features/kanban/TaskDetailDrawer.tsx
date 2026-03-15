@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   X, Play, CheckCircle2, XCircle, Trash2, Save, Loader2,
   Clock, User, Tag, AlertTriangle, MessageSquare, StopCircle, Cpu,
-  Archive,
+  Archive, Shield,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -605,6 +605,33 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
               )}
               {task.status === 'review' && (
                 <>
+                  {/* PR Review Button - Run automated review if task has PR */}
+                  {task.pr && (
+                    <Button 
+                      size="xs" 
+                      variant="outline" 
+                      onClick={async () => {
+                        try {
+                          const response = await fetch(`/api/orchestrator/task/${task.id}/review`, {
+                            method: 'POST',
+                            credentials: 'include',
+                          });
+                          const result = await response.json();
+                          if (result.report) {
+                            alert(`PR Review Results:\n\nPassed: ${result.report.passed}\nCritical: ${result.report.criticalIssues}\nHigh: ${result.report.highIssues}\nMedium: ${result.report.mediumIssues}\n\n${result.report.recommendations.join('\n')}`);
+                          }
+                        } catch (err) {
+                          alert('Failed to run PR review: ' + err);
+                        }
+                      }}
+                      disabled={workflowLoading !== null}
+                      className="text-purple-500 border-purple-500/30 hover:bg-purple-500/10"
+                    >
+                      <Shield size={12} className="mr-1" />
+                      Run PR Review
+                    </Button>
+                  )}
+                  
                   {onApprove && (
                     <Button size="xs" onClick={handleApprove} disabled={workflowLoading !== null} className="bg-green-600 hover:bg-green-500 text-white border-0">
                       {workflowLoading === 'approve' ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
@@ -618,7 +645,7 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
                     </Button>
                   )}
                   <div className="text-[10px] text-muted-foreground ml-2">
-                    Completing will move task to Done and close the session
+                    {task.pr ? 'Run PR review before completing' : 'Completing will move task to Done and close the session'}
                   </div>
                 </>
               )}
