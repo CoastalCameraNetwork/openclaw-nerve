@@ -163,6 +163,9 @@ export async function executeTask(
 /**
  * Spawn a single agent session using the Gateway sessions_spawn tool.
  * Uses subagent runtime with run mode for one-shot execution.
+ * 
+ * Note: sessions_spawn doesn't support cwd parameter, so working directory
+ * must be included in the prompt itself.
  */
 async function spawnAgentSession(
   agentName: string,
@@ -185,21 +188,21 @@ async function spawnAgentSession(
     // Build model from agent config (falls back to gateway default)
     const model = agent.model ?? undefined;
     
+    // Include working directory in the PROMPT (sessions_spawn doesn't support cwd)
+    const fullPrompt = workingDir
+      ? `**WORKING DIRECTORY:** ${workingDir}\n\nIMPORTANT: All file operations, git commands, and code changes must be performed in the directory above. Do NOT work in any other directory.\n\n${prompt}`
+      : prompt;
+    
     // Use sessions_spawn tool via gateway
-    // This spawns an isolated subagent session
+    // Use 'session' mode for persistent interactive work (not 'run' which expires)
     const spawnArgs: Record<string, unknown> = {
-      task: prompt,
+      task: fullPrompt,
       label: shortLabel,
       runtime: 'subagent',
-      mode: 'run', // One-shot execution
+      mode: 'session', // Persistent session (doesn't expire after "completion")
       thinking: thinking,
       cleanup: 'keep', // Keep session for later inspection
     };
-    
-    // Add working directory if specified
-    if (workingDir) {
-      spawnArgs.cwd = workingDir;
-    }
     
     // Add model override if specified
     if (model) {
