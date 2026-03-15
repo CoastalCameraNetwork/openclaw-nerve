@@ -14,6 +14,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { rateLimitGeneral } from '../middleware/rate-limit.js';
+import { detectProject } from '../lib/project-registry.js';
 import {
   startTask,
   getTaskStatus,
@@ -381,13 +382,17 @@ app.post('/api/orchestrator/execute/:id', rateLimitGeneral, async (c) => {
     // Extract agent names from labels
     const agents = agentLabels.map((l: string) => l.replace('agent:', ''));
     const sequence = agents.length > 1 ? 'sequential' : 'single';
+    
+    // Detect project from task description/labels
+    const project = detectProject(task.description || task.title, task.labels || []);
 
     // Spawn agent sessions
     const result = await executeTask(
       taskId,
       task.description || task.title,
       agents,
-      sequence
+      sequence,
+      project
     );
 
     // Move task to in-progress
@@ -405,5 +410,87 @@ app.post('/api/orchestrator/execute/:id', rateLimitGeneral, async (c) => {
     return c.json({ error: 'Failed to execute task' }, 500);
   }
 });
+
+
+/**
+ * GET /api/orchestrator/projects
+ * List all available projects/repos.
+ */
+app.get('/api/orchestrator/projects', rateLimitGeneral, async (c) => {
+  try {
+    const { listProjects } = await import('../lib/project-registry.js');
+    const projects = listProjects();
+    return c.json({ success: true, projects });
+  } catch (error) {
+    console.error('Failed to list projects:', error);
+    return c.json({ error: 'Failed to list projects' }, 500);
+  }
+});
+
+/**
+ * GET /api/orchestrator/task/:id/sessions
+ * Get all sessions (including expired) for a specific task.
+ * Returns captured output from task metadata.
+ */
+app.get('/api/orchestrator/task/:id/sessions', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const store = getKanbanStore();
+    const task = await store.getTask(taskId);
+    
+    if (!task) {
+      return c.json({ error: 'Task not found' }, 404);
+    }
+    
+    // Get captured agent output from task metadata
+    const agentOutput = (task as any).metadata?.agentOutput || {};
+    
+    // Get active sessions for this task
+    const sessionsResult = await invokeGatewayTool('subagents', {
+      action: 'list',
+      recentMinutes: 60,
+    });
+    
+    const parsed = parseGatewayResponse(sessionsResult);
+    const allSessions = [
+      ...((parsed.active ?? []) as Array<Record<string, unknown>>),
+      ...((parsed.recent ?? []) as Array<Record<string, unknown>>),
+    ];
+    
+    const activeSessions = allSessions
+      .filter((s: Record<string, unknown>) => {
+        const label = String(s.label ?? '');
+        return label.includes(taskId);
+      })
+      .map((s: Record<string, unknown>) => ({
+        sessionKey: s.sessionKey as string,
+        label: String(s.label ?? ''),
+        status: (s.status as string) || 'unknown',
+        output: s.output as string | undefined,
+        error: s.error as string | undefined,
+        source: 'gateway',
+      }));
+    
+    // Get captured output from metadata
+    const capturedSessions = Object.entries(agentOutput).map(([agentName, data]: [string, any]) => ({
+      label: `orch-${taskId}-${agentName}`,
+      status: data.sessionStatus || 'done',
+      output: data.output,
+      error: data.error,
+      capturedAt: data.capturedAt,
+      source: 'captured',
+    }));
+    
+    return c.json({
+      success: true,
+      task: { id: task.id, title: task.title, status: task.status },
+      sessions: [...activeSessions, ...capturedSessions],
+    });
+  } catch (error) {
+    console.error('Failed to get task sessions:', error);
+    return c.json({ error: 'Failed to get task sessions' }, 500);
+  }
+});
+
 
 export default app;

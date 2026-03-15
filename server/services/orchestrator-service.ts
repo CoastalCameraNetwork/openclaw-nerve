@@ -12,6 +12,7 @@ import {
   getAgent,
   type SpecialistAgent,
 } from '../lib/agent-registry.js';
+import { detectProject, type ProjectInfo } from '../lib/project-registry.js';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { invokeGatewayTool } from '../lib/gateway-client.js';
@@ -106,22 +107,29 @@ export async function startTask(params: {
 }
 
 /**
- * Execute a task by spawning agent sessions via OpenClaw CLI.
+ * Execute a task by spawning agent sessions via OpenClaw Gateway.
  * Called when a kanban task is moved to "in-progress" or executed.
  */
 export async function executeTask(
   taskId: string,
   taskDescription: string,
   agents: string[],
-  sequence: 'single' | 'sequential' | 'parallel'
+  sequence: 'single' | 'sequential' | 'parallel',
+  project?: ProjectInfo | null
 ): Promise<{ session_labels: string[] }> {
   const sessionLabels: string[] = [];
+  
+  // Build context with project info if available
+  const projectContext = project 
+    ? `\n\n**Working Directory:** ${project.localPath}\n**GitHub Repo:** ${project.githubRepo || 'N/A'}\n**Project:** ${project.name}`
+    : '';
 
   if (sequence === 'parallel') {
     // Spawn all agents in parallel
     const promises = agents.map(async (agentName) => {
       const label = `orch-${taskId}-${agentName}`;
-      const result = await spawnAgentSession(agentName, taskDescription, label);
+      const prompt = `${taskDescription}${projectContext}`;
+      const result = await spawnAgentSession(agentName, prompt, label, project?.localPath);
       if (result.session_key) {
         sessionLabels.push(label);
       }
@@ -159,7 +167,8 @@ export async function executeTask(
 async function spawnAgentSession(
   agentName: string,
   prompt: string,
-  label: string
+  label: string,
+  workingDir?: string
 ): Promise<{ session_key?: string; output?: string; error?: string }> {
   try {
     const agent = getAgent(agentName);
@@ -186,6 +195,11 @@ async function spawnAgentSession(
       thinking: thinking,
       cleanup: 'keep', // Keep session for later inspection
     };
+    
+    // Add working directory if specified
+    if (workingDir) {
+      spawnArgs.cwd = workingDir;
+    }
     
     // Add model override if specified
     if (model) {
