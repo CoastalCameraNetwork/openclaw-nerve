@@ -313,6 +313,13 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
     totalTasks: 0,
     avgDuration: '0m',
   });
+  
+  const [usage, setUsage] = useState({
+    totalInput: 0,
+    totalOutput: 0,
+    totalCost: 0,
+    loading: true,
+  });
 
   const { agents: allAgents } = useAgents();
 
@@ -371,6 +378,25 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
 
     return { start, end: now, label };
   }, [timeRange]);
+
+  // Fetch token usage and cost data
+  const fetchUsage = useCallback(async () => {
+    try {
+      const response = await fetch('/api/tokens', { credentials: 'include' });
+      if (response.ok) {
+        const data = await response.json();
+        setUsage({
+          totalInput: data.totalInput || data.persistent?.totalInput || 0,
+          totalOutput: data.totalOutput || data.persistent?.totalOutput || 0,
+          totalCost: data.totalCost || data.persistent?.totalCost || 0,
+          loading: false,
+        });
+      }
+    } catch (err) {
+      console.error('Failed to fetch usage:', err);
+      setUsage(prev => ({ ...prev, loading: false }));
+    }
+  }, []);
 
   // Fetch active sessions from both kanban tasks and gateway subagents
   const fetchSessions = useCallback(async () => {
@@ -489,9 +515,14 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
 
   useEffect(() => {
     fetchSessions();
+    fetchUsage();
     const interval = setInterval(fetchSessions, 3000);
-    return () => clearInterval(interval);
-  }, [fetchSessions]);
+    const usageInterval = setInterval(fetchUsage, 10000); // Update usage every 10s
+    return () => {
+      clearInterval(interval);
+      clearInterval(usageInterval);
+    };
+  }, [fetchSessions, fetchUsage]);
 
   if (loading) {
     return (
@@ -562,30 +593,34 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
         />
       </div>
 
-      {/* Token Usage & Cost (placeholder for future integration) */}
+      {/* Token Usage & Cost */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="p-4 rounded-xl border bg-card">
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-semibold flex items-center gap-2">
               <TrendingUp size={16} className="text-green-400" />
-              Token Usage (Today)
+              Token Usage
             </h3>
+            {usage.loading && <Loader2 size={14} className="animate-spin text-muted-foreground" />}
           </div>
           <div className="space-y-2">
             <div className="flex items-center justify-between text-xs">
               <span className="text-muted-foreground">Input tokens</span>
-              <span className="font-mono">~2.4K</span>
+              <span className="font-mono">{usage.loading ? '...' : usage.totalInput.toLocaleString()}</span>
             </div>
             <div className="flex items-center justify-between text-xs">
               <span className="text-muted-foreground">Output tokens</span>
-              <span className="font-mono">~8.1K</span>
+              <span className="font-mono">{usage.loading ? '...' : usage.totalOutput.toLocaleString()}</span>
             </div>
             <div className="flex items-center justify-between text-xs">
               <span className="text-muted-foreground">Total</span>
-              <span className="font-mono font-semibold">~10.5K</span>
+              <span className="font-mono font-semibold">{usage.loading ? '...' : (usage.totalInput + usage.totalOutput).toLocaleString()}</span>
             </div>
             <div className="mt-2 h-2 bg-muted rounded-full overflow-hidden">
-              <div className="h-full w-[65%] bg-gradient-to-r from-green-400 to-cyan-400" />
+              <div 
+                className="h-full bg-gradient-to-r from-green-400 to-cyan-400" 
+                style={{ width: usage.loading ? '0%' : '100%' }}
+              />
             </div>
           </div>
         </div>
@@ -594,24 +629,26 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
           <div className="flex items-center justify-between mb-3">
             <h3 className="text-sm font-semibold flex items-center gap-2">
               <DollarSign size={16} className="text-amber-400" />
-              Estimated Cost (Today)
+              Estimated Cost
             </h3>
           </div>
           <div className="space-y-2">
             <div className="flex items-center justify-between text-xs">
               <span className="text-muted-foreground">Model usage</span>
-              <span className="font-mono">$0.042</span>
+              <span className="font-mono">{usage.loading ? '...' : `$${usage.totalCost.toFixed(3)}`}</span>
             </div>
             <div className="flex items-center justify-between text-xs">
               <span className="text-muted-foreground">Tool calls</span>
-              <span className="font-mono">$0.008</span>
+              <span className="font-mono">$0.000</span>
             </div>
             <div className="flex items-center justify-between text-xs pt-2 border-t">
               <span className="text-muted-foreground">Total</span>
-              <span className="font-mono font-semibold text-green-400">$0.050</span>
+              <span className="font-mono font-semibold text-green-400">
+                {usage.loading ? '...' : `$${usage.totalCost.toFixed(3)}`}
+              </span>
             </div>
             <div className="text-[10px] text-muted-foreground mt-2">
-              * Estimates based on current model pricing
+              * Based on actual API usage from Gateway
             </div>
           </div>
         </div>
