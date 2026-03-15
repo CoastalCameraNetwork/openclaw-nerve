@@ -5,6 +5,7 @@ import { useProposals } from './hooks/useProposals';
 import { KanbanHeader } from './KanbanHeader';
 import { KanbanBoard } from './KanbanBoard';
 import { CreateTaskDialog } from './CreateTaskDialog';
+import { CreateOrchestratedTaskDialog } from '../orchestrator/CreateOrchestratedTaskDialog';
 import { TaskDetailDrawer } from './TaskDetailDrawer';
 
 interface KanbanPanelProps {
@@ -46,6 +47,7 @@ export function KanbanPanel({ initialTaskId, onInitialTaskConsumed }: KanbanPane
   } = useProposals();
 
   const [createOpen, setCreateOpen] = useState(false);
+  const [orchestratorOpen, setOrchestratorOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<KanbanTask | null>(null);
   const consumedRef = useRef<string | null>(null);
 
@@ -93,6 +95,28 @@ export function KanbanPanel({ initialTaskId, onInitialTaskConsumed }: KanbanPane
     setCreateOpen(true);
   }, []);
 
+  /* ── Open orchestrator create dialog ── */
+  const openOrchestratorDialog = useCallback(() => {
+    setOrchestratorOpen(true);
+  }, []);
+
+  /* ── Handle orchestrator task success ── */
+  const handleOrchestratorSuccess = useCallback((taskId: string) => {
+    // Refresh tasks to show the new one
+    fetchTasks();
+    // Optionally open the task detail drawer
+    const newTask = tasks.find(t => t.id === taskId);
+    if (newTask) {
+      setSelectedTask(newTask);
+    }
+  }, [fetchTasks, tasks]);
+
+  /* ── Open orchestrator dashboard ── */
+  const openDashboard = useCallback(() => {
+    // Dispatch custom event to switch view mode
+    window.dispatchEvent(new CustomEvent('nerve:setViewMode', { detail: 'orchestrator' }));
+  }, []);
+
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-background">
       {/* Header with search, filters, stats, + New Task */}
@@ -101,6 +125,8 @@ export function KanbanPanel({ initialTaskId, onInitialTaskConsumed }: KanbanPane
         onFiltersChange={setFilters}
         statusCounts={statusCounts}
         onCreateTask={openCreateDialog}
+        onCreateOrchestratedTask={openOrchestratorDialog}
+        onOpenDashboard={openDashboard}
         proposals={proposals}
         pendingProposalCount={pendingProposalCount}
         onApproveProposal={async (id) => { await approveProposal(id); await fetchTasks(); }}
@@ -126,6 +152,13 @@ export function KanbanPanel({ initialTaskId, onInitialTaskConsumed }: KanbanPane
         open={createOpen}
         onOpenChange={setCreateOpen}
         onCreate={handleCreate}
+      />
+
+      {/* Create Orchestrated Task Modal */}
+      <CreateOrchestratedTaskDialog
+        open={orchestratorOpen}
+        onOpenChange={setOrchestratorOpen}
+        onSuccess={handleOrchestratorSuccess}
       />
 
       {/* Task Detail Drawer */}
