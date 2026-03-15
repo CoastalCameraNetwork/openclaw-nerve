@@ -282,3 +282,48 @@ export function useCancelTask() {
 
   return { cancelTask, loading, error };
 }
+
+/**
+ * Hook to get task sessions (including captured output from expired sessions)
+ */
+export function useTaskSessions(taskId: string | null, pollInterval = 3000) {
+  const [sessions, setSessions] = useState<Array<{
+    label: string;
+    status: string;
+    output?: string;
+    error?: string;
+    capturedAt?: number;
+    source: 'gateway' | 'captured';
+  }>>([]);
+  const [loading, setLoading] = useState(true);
+
+  const loadSessions = useCallback(async () => {
+    if (!taskId) {
+      setSessions([]);
+      setLoading(false);
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/orchestrator/task/${taskId}/sessions`, {
+        credentials: 'include',
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setSessions(data.sessions || []);
+      }
+    } catch (err) {
+      console.error('Failed to load task sessions:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [taskId]);
+
+  useEffect(() => {
+    loadSessions();
+    const interval = setInterval(loadSessions, pollInterval);
+    return () => clearInterval(interval);
+  }, [taskId, pollInterval, loadSessions]);
+
+  return { sessions, loading, reload: loadSessions };
+}
