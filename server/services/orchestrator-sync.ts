@@ -33,8 +33,9 @@ function parseGatewayResponse(result: unknown): Record<string, unknown> {
 /**
  * Sync Gateway sessions to Kanban tasks.
  * When sessions are done/error, move tasks to review.
+ * Also handles orphaned tasks (sessions gone but tasks still in-progress).
  */
-export async function syncSessionsToKanban(): Promise<{ synced: number; errors: number }> {
+export async function syncSessionsToKanban(): Promise<{ synced: number; errors: number; orphaned: number }> {
   try {
     // Get all Gateway sessions
     const sessionsResult = await invokeGatewayTool('subagents', {
@@ -53,16 +54,15 @@ export async function syncSessionsToKanban(): Promise<{ synced: number; errors: 
     
     let synced = 0;
     let errors = 0;
+    let orphaned = 0;
 
-    // Find sessions that are done/error but tasks still in-progress
+    // Track which tasks have active sessions
+    const tasksWithSessions = new Set<string>();
+
+    // Process completed/failed sessions
     for (const session of sessions) {
       const label = String(session.label ?? '');
       const sessionStatus = String(session.status ?? '');
-
-      // Only process completed/failed sessions
-      if (!['done', 'error', 'failed'].includes(sessionStatus)) {
-        continue;
-      }
 
       // Extract task ID from label (format: orch-{taskId}-{agentName})
       const match = label.match(/^orch-(.+?)-([^ -]+)$/);
@@ -71,6 +71,12 @@ export async function syncSessionsToKanban(): Promise<{ synced: number; errors: 
       }
 
       const taskId = match[1];
+      tasksWithSessions.add(taskId);
+
+      // Only process completed/failed sessions
+      if (!['done', 'error', 'failed'].includes(sessionStatus)) {
+        continue;
+      }
       
       // Find the Kanban task
       const task = allTasks.find((t: any) => t.id === taskId);
@@ -96,24 +102,53 @@ export async function syncSessionsToKanban(): Promise<{ synced: number; errors: 
       }
     }
 
-    return { synced, errors };
+    // Find orphaned tasks: in-progress but no active session
+    for (const task of allTasks) {
+      if (task.status === 'in-progress' && !tasksWithSessions.has(task.id)) {
+        // Task is in-progress but no session exists - agents finished or failed
+        try {
+          await store.updateTask(task.id, task.version, {
+            status: 'review',
+          });
+          orphaned++;
+          console.log(`[orchestrator-sync] Orphaned task ${task.id} moved to review (no session found)`);
+        } catch (err) {
+          console.error(`[orchestrator-sync] Failed to update orphaned task ${task.id}:`, err);
+          errors++;
+        }
+      }
+    }
+
+    return { synced, errors, orphaned };
   } catch (err) {
     console.error('[orchestrator-sync] Sync failed:', err);
-    return { synced: 0, errors: 1 };
+    return { synced: 0, errors: 1, orphaned: 0 };
   }
 }
 
 /**
  * Start background sync loop.
- * Runs every 10 seconds to check for completed sessions.
+ * Runs immediately on startup, then every interval to check for completed sessions.
  */
 export function startSyncLoop(intervalMs = 10000): () => void {
   console.log('[orchestrator-sync] Starting sync loop (interval: %dms)', intervalMs);
   
+  // Run immediately on startup
+  syncSessionsToKanban().then(result => {
+    if (result.synced > 0 || result.errors > 0 || result.orphaned > 0) {
+      console.log('[orchestrator-sync] Initial sync complete: %d synced, %d orphaned, %d errors', 
+        result.synced, result.orphaned, result.errors);
+    } else {
+      console.log('[orchestrator-sync] Initial sync complete (no changes needed)');
+    }
+  });
+  
+  // Then run periodically
   const timer = setInterval(async () => {
     const result = await syncSessionsToKanban();
-    if (result.synced > 0 || result.errors > 0) {
-      console.log('[orchestrator-sync] Sync complete: %d synced, %d errors', result.synced, result.errors);
+    if (result.synced > 0 || result.errors > 0 || result.orphaned > 0) {
+      console.log('[orchestrator-sync] Periodic sync: %d synced, %d orphaned, %d errors', 
+        result.synced, result.orphaned, result.errors);
     }
   }, intervalMs);
 
