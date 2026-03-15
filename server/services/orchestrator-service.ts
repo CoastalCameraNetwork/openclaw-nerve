@@ -173,16 +173,26 @@ async function spawnAgentSession(
     // Build thinking level from agent config
     const thinking = agent.thinking ?? 'medium';
     
+    // Build model from agent config (falls back to gateway default)
+    const model = agent.model ?? undefined;
+    
     // Use sessions_spawn tool via gateway
     // This spawns an isolated subagent session
-    const result = await invokeGatewayTool('sessions_spawn', {
+    const spawnArgs: Record<string, unknown> = {
       task: prompt,
       label: shortLabel,
       runtime: 'subagent',
       mode: 'run', // One-shot execution
       thinking: thinking,
       cleanup: 'keep', // Keep session for later inspection
-    }, 30000); // 30 second timeout for spawn
+    };
+    
+    // Add model override if specified
+    if (model) {
+      spawnArgs.model = model;
+    }
+    
+    const result = await invokeGatewayTool('sessions_spawn', spawnArgs, 30000); // 30 second timeout for spawn
     
     // Extract session key from result
     const sessionKey = (result as Record<string, unknown>)?.sessionKey as string | undefined;
