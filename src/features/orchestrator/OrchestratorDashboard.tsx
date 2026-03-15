@@ -474,9 +474,10 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
               s.label && s.label.includes(agentName)
             );
             
-            // Determine status based on task run status and session status
+            // Determine status based on session status (Gateway is source of truth)
             let status: 'pending' | 'running' | 'completed' | 'failed' = 'pending';
             if (session) {
+              // Gateway session exists - use its status
               status = session.status === 'running' ? 'running' : 
                        session.status === 'done' ? 'completed' : 
                        session.status === 'error' ? 'failed' : 'pending';
@@ -484,8 +485,11 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
               status = 'completed';
             } else if (task.run?.status === 'error') {
               status = 'failed';
-            } else if (task.run?.status === 'running' || task.status === 'in-progress') {
-              status = 'running'; // Task is active even if session not found
+            } else if (task.run?.status === 'running') {
+              status = 'running';
+            } else if (task.status === 'in-progress') {
+              // Task is in-progress but no active session - agents finished
+              status = 'completed';
             }
             
             return {
