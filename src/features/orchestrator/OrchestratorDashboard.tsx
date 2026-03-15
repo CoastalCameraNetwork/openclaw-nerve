@@ -497,16 +497,18 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
             };
           });
           
+          const startedAt = task.run?.startedAt || Date.now();
+          
           return {
             taskId: task.id,
             taskTitle: task.title,
             agents: agents.length > 0 ? agents : [{
               name: 'orchestrator-agent',
-              status: 'running' as const,
-              elapsed: Date.now() - task.run.startedAt,
+              status: 'pending' as const,
+              elapsed: 0,
               output: undefined,
             }],
-            startedAt: task.run.startedAt,
+            startedAt,
             status: 'running' as const,
           };
         });
