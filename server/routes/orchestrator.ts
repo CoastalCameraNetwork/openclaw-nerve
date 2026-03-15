@@ -372,15 +372,15 @@ app.post('/api/orchestrator/execute/:id', rateLimitGeneral, async (c) => {
       return c.json({ error: 'Task not found' }, 404);
     }
 
-    // Check if task has orchestrator labels
-    const isOrchestrated = task.labels?.includes('orchestrated');
-    if (!isOrchestrated) {
-      return c.json({ error: 'Not an orchestrated task' }, 400);
+    // Check if task has agent labels (orchestrated tasks have agent:* labels)
+    const agentLabels = task.labels?.filter((l: string) => l.startsWith('agent:')) || [];
+    if (agentLabels.length === 0) {
+      return c.json({ error: 'Task has no agent assignments' }, 400);
     }
 
-    // For now, use default agent selection - would need to store agent info in labels or description
-    // This is a limitation - we'd need to extend KanbanTask to store metadata
-    const { agents, sequence } = previewRouting(task.description || task.title);
+    // Extract agent names from labels
+    const agents = agentLabels.map((l: string) => l.replace('agent:', ''));
+    const sequence = agents.length > 1 ? 'sequential' : 'single';
 
     // Spawn agent sessions
     const result = await executeTask(
