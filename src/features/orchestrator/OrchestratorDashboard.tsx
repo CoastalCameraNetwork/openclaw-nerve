@@ -14,12 +14,17 @@ import { memo, useEffect, useState, useCallback } from 'react';
 import { Cpu, Clock, CheckCircle2, Loader2, Users, Activity, DollarSign, TrendingUp, Calendar } from 'lucide-react';
 import { useAgents } from './useOrchestrator';
 
-export type TimeRangeOption = 'today-local' | '24h-rolling' | 'today-utc';
+export type TimeRangeOption = 'today-local' | '24h-rolling' | '48h-rolling' | '72h-rolling' | '7d-rolling' | '14d-rolling' | '30d-rolling' | 'today-utc';
 
 export const TIME_RANGE_OPTIONS: { value: TimeRangeOption; label: string; description: string }[] = [
   { value: 'today-local', label: 'Today (Local)', description: 'Since 12:00 AM local time' },
-  { value: '24h-rolling', label: 'Last 24 Hours', description: 'Rolling 24-hour window' },
   { value: 'today-utc', label: 'Today (UTC)', description: 'Since 12:00 AM UTC' },
+  { value: '24h-rolling', label: 'Last 24 Hours', description: 'Rolling 24-hour window' },
+  { value: '48h-rolling', label: 'Last 48 Hours', description: 'Rolling 48-hour window' },
+  { value: '72h-rolling', label: 'Last 72 Hours', description: 'Rolling 72-hour window' },
+  { value: '7d-rolling', label: 'Last 7 Days', description: 'Rolling 7-day window' },
+  { value: '14d-rolling', label: 'Last 14 Days', description: 'Rolling 14-day window' },
+  { value: '30d-rolling', label: 'Last 30 Days', description: 'Rolling 30-day window' },
 ];
 
 interface DashboardSession {
@@ -325,16 +330,41 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
         label = 'Today (Local)';
         break;
       }
-      case '24h-rolling': {
-        start = now - (24 * 60 * 60 * 1000);
-        label = 'Last 24 Hours';
-        break;
-      }
       case 'today-utc': {
         const todayUTC = new Date();
         todayUTC.setUTCHours(0, 0, 0, 0);
         start = todayUTC.getTime();
         label = 'Today (UTC)';
+        break;
+      }
+      case '24h-rolling': {
+        start = now - (24 * 60 * 60 * 1000);
+        label = 'Last 24 Hours';
+        break;
+      }
+      case '48h-rolling': {
+        start = now - (48 * 60 * 60 * 1000);
+        label = 'Last 48 Hours';
+        break;
+      }
+      case '72h-rolling': {
+        start = now - (72 * 60 * 60 * 1000);
+        label = 'Last 72 Hours';
+        break;
+      }
+      case '7d-rolling': {
+        start = now - (7 * 24 * 60 * 60 * 1000);
+        label = 'Last 7 Days';
+        break;
+      }
+      case '14d-rolling': {
+        start = now - (14 * 24 * 60 * 60 * 1000);
+        label = 'Last 14 Days';
+        break;
+      }
+      case '30d-rolling': {
+        start = now - (30 * 24 * 60 * 60 * 1000);
+        label = 'Last 30 Days';
         break;
       }
     }
