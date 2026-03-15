@@ -410,14 +410,12 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
         const tasksData = await tasksResponse.json();
         const allTasks = tasksData.items || tasksData.tasks || [];
         
-        // Get active sessions - tasks with agent labels that are in-progress or running
-        // Note: run.status can be 'running', 'done', 'error', 'aborted'
-        // Task status can be 'todo', 'in-progress', 'review', 'done', 'cancelled'
+        // Get active sessions - tasks with agent labels that are not done/cancelled
+        // Shows tasks that are in-progress, review, or have active runs
         const orchestratedTasks = allTasks.filter((t: any) => {
           const hasAgents = t.labels?.some((l: string) => l.startsWith('agent:'));
-          const isInProgress = t.status === 'in-progress';
-          const isRunActive = t.run && ['running', 'done', 'error'].includes(t.run.status);
-          return hasAgents && (isInProgress || isRunActive);
+          const isActive = !['done', 'cancelled'].includes(t.status);
+          return hasAgents && isActive;
         });
         
         // Get time window for stats
