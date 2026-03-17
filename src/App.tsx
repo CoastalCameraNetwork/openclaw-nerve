@@ -669,10 +669,17 @@ export default function App({ onLogout }: AppProps) {
           </div>
         )}
         {viewMode === 'orchestrator' && (
-          <div className="shell-panel boot-panel flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden rounded-[28px] overflow-auto">
-            <Suspense fallback={<div className="flex-1 flex items-center justify-center text-muted-foreground text-xs bg-background">Loading dashboard…</div>}>
-              <OrchestratorDashboard />
-            </Suspense>
+          <div className="flex-1 flex min-w-0 min-h-0">
+            {/* Orchestrator Dashboard - Left Panel */}
+            <div className="flex-1 flex flex-col min-w-0 min-h-0 boot-panel overflow-auto">
+              <Suspense fallback={<div className="flex-1 flex items-center justify-center text-muted-foreground text-xs bg-background">Loading dashboard…</div>}>
+                <OrchestratorDashboard />
+              </Suspense>
+            </div>
+            {/* Right Panel - Sessions + Workspace tabs */}
+            <div className="w-[400px] min-w-[320px] max-w-[500px] flex flex-col gap-px bg-border boot-panel">
+              {renderRightPanels(handleSessionChange)}
+            </div>
           </div>
         )}
         {isCompactLayout ? (
