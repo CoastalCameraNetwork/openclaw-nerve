@@ -43,9 +43,9 @@ const THEME_LABELS: Record<ThemeName, string> = {
 };
 
 const FONT_LABELS: Record<FontName, string> = {
-  'instrument-sans': 'Instrument Sans',
-  'space-grotesk': 'Space Grotesk',
+  'inter': 'Inter',
   'jetbrains-mono': 'JetBrains Mono',
+  'system': 'System Default',
 };
 
 /** Build the full list of command-palette commands from action callbacks. */
