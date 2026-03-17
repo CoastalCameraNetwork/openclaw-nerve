@@ -628,7 +628,7 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
                       className="text-purple-500 border-purple-500/30 hover:bg-purple-500/10"
                     >
                       <Shield size={12} className="mr-1" />
-                      Run PR Review
+                      Run Automated Review
                     </Button>
                   )}
                   

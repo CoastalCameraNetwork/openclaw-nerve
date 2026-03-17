@@ -1,7 +1,6 @@
 import { memo, useState, useCallback, useMemo, useRef } from 'react';
 import { LayoutGrid } from 'lucide-react';
 import { DndContext, DragOverlay } from '@dnd-kit/core';
-import { Button } from '@/components/ui/button';
 import type { KanbanTask, TaskStatus } from './types';
 import { COLUMNS } from './types';
 import { KanbanColumn } from './KanbanColumn';
@@ -127,9 +126,12 @@ export const KanbanBoard = memo(function KanbanBoard({
         <div className="max-w-[420px] text-center">
           <p className="text-sm text-destructive font-semibold mb-2">Couldn't load tasks</p>
           <p className="text-xs text-muted-foreground mb-4">{error}</p>
-          <Button size="sm" onClick={onRetry} className="text-[11px] uppercase tracking-[0.16em]">
+          <button
+            onClick={onRetry}
+            className="h-[30px] px-4 text-xs font-semibold bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
+          >
             Retry
-          </Button>
+          </button>
         </div>
       </div>
     );
@@ -156,9 +158,12 @@ export const KanbanBoard = memo(function KanbanBoard({
           <p className="text-[13px] text-muted-foreground mb-5">
             Create your first task or ask an agent to propose one.
           </p>
-          <Button size="sm" onClick={onCreateTask} className="min-w-[132px] text-[11px] uppercase tracking-[0.16em]">
+          <button
+            onClick={onCreateTask}
+            className="h-8 min-w-[120px] px-5 text-xs font-semibold bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
+          >
             Create Task
-          </Button>
+          </button>
         </div>
       </div>
     );

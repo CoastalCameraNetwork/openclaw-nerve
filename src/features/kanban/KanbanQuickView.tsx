@@ -6,10 +6,17 @@
 
 import { useMemo } from 'react';
 import { ArrowRight } from 'lucide-react';
-import type { KanbanTask, TaskStatus } from './types';
+import type { KanbanTask, TaskStatus, TaskPriority } from './types';
 import { COLUMN_LABELS } from './types';
 import { useKanban } from './hooks/useKanban';
-import { getTaskPriorityTone, getTaskStatusTone } from './tone';
+
+/* ── Priority colors ── */
+const PRIORITY_DOT: Record<TaskPriority, string> = {
+  critical: 'bg-red-500',
+  high: 'bg-orange-400',
+  normal: 'bg-blue-400',
+  low: 'bg-zinc-400',
+};
 
 /* ── Statuses shown in quick view ── */
 const QUICK_STATUSES: TaskStatus[] = ['todo', 'in-progress', 'review'];
@@ -21,14 +28,13 @@ interface KanbanQuickViewProps {
 }
 
 function TaskRow({ task, onClick }: { task: KanbanTask; onClick: () => void }) {
-  const priorityTone = getTaskPriorityTone(task.priority);
   return (
     <button
       onClick={onClick}
-      className="group flex w-full items-center gap-2 rounded-2xl border border-transparent px-2 py-2 text-left text-xs transition-colors cursor-pointer hover:border-primary/16 hover:bg-primary/[0.05]"
+      className="w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-left text-xs hover:bg-muted/60 transition-colors group cursor-pointer"
     >
       <span
-        className={`h-1.5 w-1.5 shrink-0 rounded-full ${priorityTone.dotClass}`}
+        className={`shrink-0 w-1.5 h-1.5 rounded-full ${PRIORITY_DOT[task.priority]}`}
         title={task.priority}
       />
       <span className="truncate flex-1 text-foreground/80 group-hover:text-foreground">
@@ -52,17 +58,16 @@ function StatusSection({
   tasks: KanbanTask[];
   onOpenTask: (task: KanbanTask) => void;
 }) {
-  const tone = getTaskStatusTone(status);
   const visible = tasks.slice(0, MAX_ROWS);
   const overflow = tasks.length - MAX_ROWS;
 
   return (
     <div className="mb-2 last:mb-0">
-      <div className="mb-1 flex items-center gap-2 px-2">
-        <span className={`text-[10px] font-medium uppercase tracking-[0.16em] ${tone.textClass}`}>
+      <div className="flex items-center gap-1.5 px-1.5 mb-0.5">
+        <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
           {COLUMN_LABELS[status]}
         </span>
-        <span className="font-mono text-[10px] text-muted-foreground/60">{tasks.length}</span>
+        <span className="text-[10px] text-muted-foreground/60">{tasks.length}</span>
       </div>
       {visible.map(task => (
         <TaskRow key={task.id} task={task} onClick={() => onOpenTask(task)} />
@@ -90,44 +95,38 @@ export function KanbanQuickView({ onOpenBoard, onOpenTask }: KanbanQuickViewProp
   const allEmpty = totalActive === 0;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="h-full flex flex-col min-h-0">
       {/* Header */}
-      <div className="border-b border-border/40 px-3 py-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <span className="cockpit-kicker text-[9px]">
-              <span className="text-primary">◆</span>
-              Kanban
-            </span>
+      <div className="flex items-center justify-between px-3 py-2 border-b border-border/40">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-medium text-foreground/90">Kanban</span>
           {totalActive > 0 && (
-            <span className="cockpit-badge" data-tone="primary">
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple/15 text-purple font-medium">
               {totalActive}
             </span>
           )}
         </div>
         <button
           onClick={onOpenBoard}
-          className="cockpit-toolbar-button px-3 text-[11px]"
+          className="flex items-center gap-1 text-[11px] text-purple hover:text-purple/80 transition-colors cursor-pointer"
         >
           Open Board
           <ArrowRight size={11} />
         </button>
-        </div>
       </div>
 
       {/* Content */}
-      <div className="flex-1 min-h-0 overflow-y-auto px-2 py-3">
+      <div className="flex-1 min-h-0 overflow-y-auto px-2 py-2">
         {error && (
           <p className="text-[11px] text-destructive px-1.5">{error}</p>
         )}
         {loading && !error && (
-          <p className="px-2 text-[11px] text-muted-foreground/60 animate-pulse">Loading tasks…</p>
+          <p className="text-[11px] text-muted-foreground/50 px-1.5 animate-pulse">Loading…</p>
         )}
         {!loading && allEmpty && !error && (
-          <div className="px-2 py-5 text-center">
-            <div className="cockpit-badge mx-auto w-fit">Quiet board</div>
-            <p className="mt-3 text-[11px] text-muted-foreground/70">No active tasks right now.</p>
-          </div>
+          <p className="text-[11px] text-muted-foreground/40 px-1.5 py-4 text-center">
+            No active tasks
+          </p>
         )}
         {!loading && !allEmpty && sections.map(({ status, tasks }) =>
           tasks.length > 0 ? (

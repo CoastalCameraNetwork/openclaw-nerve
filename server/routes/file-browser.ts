@@ -21,7 +21,6 @@ import {
   isBinary,
   MAX_FILE_SIZE,
 } from '../lib/file-utils.js';
-import { config } from '../lib/config.js';
 import {
   FileOpError,
   moveEntry,
@@ -74,10 +73,7 @@ async function listDirectory(
     if (inTrash) {
       // Internal metadata file for restore bookkeeping.
       if (item.name === '.index.json') continue;
-    // FILE_BROWSER_ROOT: Show all files when custom root is set, but always hide .trash folder
-    } else if (!config.fileBrowserRoot && item.name.startsWith('.') && item.name !== '.nerveignore' && item.name !== '.trash') {
-      continue;
-    } else if (config.fileBrowserRoot && item.name === '.trash') {
+    } else if (item.name.startsWith('.') && item.name !== '.nerveignore' && item.name !== '.trash') {
       continue;
     }
 
@@ -152,15 +148,7 @@ app.get('/api/files/tree', async (c) => {
 
   const entries = await listDirectory(targetDir, subPath, depth);
 
-  return c.json({ 
-    ok: true, 
-    root: subPath || '.', 
-    entries,
-    workspaceInfo: {
-      isCustomWorkspace: !!config.fileBrowserRoot,
-      rootPath: getWorkspaceRoot(),
-    }
-  });
+  return c.json({ ok: true, root: subPath || '.', entries });
 });
 
 // ── GET /api/files/read ──────────────────────────────────────────────
@@ -342,30 +330,8 @@ app.post('/api/files/trash', async (c) => {
   }
 
   try {
-    // Custom directory browser root uses permanent deletion (no trash)
-    if (config.fileBrowserRoot) {
-      const requestedPath = body.path.trim();
-      if (requestedPath === '.' || requestedPath === './') {
-        return c.json({ ok: false, error: 'Deleting workspace root is not allowed' }, 400);
-      }
-      
-      const resolved = await resolveWorkspacePath(requestedPath);
-      if (!resolved) {
-        return c.json({ ok: false, error: 'Invalid or excluded path' }, 403);
-      }
-
-      const rootRealPath = await fs.realpath(getWorkspaceRoot()).catch(() => getWorkspaceRoot());
-      if (resolved === rootRealPath) {
-        return c.json({ ok: false, error: 'Deleting workspace root is not allowed' }, 400);
-      }
-
-      await fs.rm(resolved, { recursive: true, force: true });
-      return c.json({ ok: true, from: body.path, to: '' });
-    } else {
-      // Default workspace: use trash
-      const result = await trashEntry({ path: body.path });
-      return c.json({ ok: true, ...result });
-    }
+    const result = await trashEntry({ path: body.path });
+    return c.json({ ok: true, ...result });
   } catch (err) {
     return handleFileOpError(c, err);
   }

@@ -3,7 +3,7 @@ import { themes, type ThemeName } from '@/lib/themes';
 import { fonts, type FontName } from '@/lib/fonts';
 import type { TTSProvider } from '@/features/tts/useTTS';
 
-export type ViewMode = 'chat' | 'kanban';
+export type ViewMode = 'chat' | 'kanban' | 'orchestrator';
 
 export interface CommandActions {
   onNewSession: () => void;
@@ -43,9 +43,9 @@ const THEME_LABELS: Record<ThemeName, string> = {
 };
 
 const FONT_LABELS: Record<FontName, string> = {
-  'instrument-sans': 'Instrument Sans',
-  'space-grotesk': 'Space Grotesk',
+  'inter': 'Inter',
   'jetbrains-mono': 'JetBrains Mono',
+  'system': 'System',
 };
 
 /** Build the full list of command-palette commands from action callbacks. */
@@ -85,10 +85,10 @@ export function createCommands(actions: CommandActions): Command[] {
     },
     {
       id: 'new-session',
-      label: 'Create session',
+      label: 'Spawn subagent',
       action: actions.onNewSession,
       category: 'actions',
-      keywords: ['new', 'session', 'agent', 'subagent', 'spawn', 'create', 'launch'],
+      keywords: ['new', 'session', 'agent', 'spawn', 'create', 'launch'],
     },
     {
       id: 'reset',
@@ -197,6 +197,13 @@ export function createCommands(actions: CommandActions): Command[] {
         action: () => actions.onSetViewMode!('chat'),
         category: 'kanban' as const,
         keywords: ['chat', 'conversation', 'view'],
+      },
+      {
+        id: 'open-orchestrator',
+        label: 'Open Orchestrator Dashboard',
+        action: () => actions.onSetViewMode!('orchestrator'),
+        category: 'kanban' as const,
+        keywords: ['orchestrator', 'dashboard', 'agents', 'monitoring', 'view'],
       },
       {
         id: 'create-kanban-task',

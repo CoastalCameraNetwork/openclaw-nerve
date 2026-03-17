@@ -25,8 +25,6 @@ import { config, WS_ALLOWED_HOSTS, SESSION_COOKIE_NAME } from './config.js';
 import { verifySession, parseSessionCookie } from './session.js';
 import { createDeviceBlock, getDeviceIdentity } from './device-identity.js';
 import { resolveOpenclawBin } from './openclaw-bin.js';
-import { canInjectGatewayToken } from './trust-utils.js';
-import { isAllowedOrigin } from './origin-utils.js';
 
 /** @internal — exported for test overrides */
 export const _internals = { challengeTimeoutMs: 5_000 };
@@ -92,13 +90,6 @@ export function setupWebSocketProxy(server: HttpServer | HttpsServer): void {
 
   server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     if (req.url?.startsWith('/ws')) {
-      const originHeader = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin;
-      if (!isAllowedOrigin(originHeader)) {
-        socket.write('HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\nOrigin not allowed');
-        socket.destroy();
-        return;
-      }
-
       // Auth check for WebSocket connections
       if (config.auth) {
         const token = parseSessionCookie(req.headers.cookie, SESSION_COOKIE_NAME);
@@ -148,16 +139,12 @@ export function setupWebSocketProxy(server: HttpServer | HttpsServer): void {
       return;
     }
 
+    // Forward origin header for gateway auth
     const isEncrypted = !!(req.socket as unknown as { encrypted?: boolean }).encrypted;
     const scheme = isEncrypted ? 'https' : 'http';
-    const clientOrigin = (Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin)
-      || `${scheme}://${req.headers.host}`;
+    const clientOrigin = req.headers.origin || `${scheme}://${req.headers.host}`;
 
-    // Determine if the client is trusted enough for token injection.
-    // canInjectGatewayToken accounts for both auth state and loopback detection (proxy-aware).
-    const isTrusted = canInjectGatewayToken(req);
-
-    createGatewayRelay(clientWs, targetUrl, clientOrigin, connId, isTrusted);
+    createGatewayRelay(clientWs, targetUrl, clientOrigin, connId);
   });
 }
 
@@ -178,7 +165,6 @@ function createGatewayRelay(
   targetUrl: URL,
   clientOrigin: string,
   connId: string,
-  isTrusted: boolean,
 ): void {
   const tag = `[ws-proxy:${connId}]`;
   const connStartTime = Date.now();
@@ -268,27 +254,10 @@ function createGatewayRelay(
     if (gwWs.readyState !== WebSocket.OPEN) return;
     connectSent = true;
     clearChallengeTimer();
-
-    let modified = savedConnectMsg;
-    // Inject gateway token proxy-side for trusted clients if not provided by browser
-    if (isTrusted && config.gatewayToken && !(modified.params as ConnectParams)?.auth?.token) {
-      modified = {
-        ...modified,
-        params: {
-          ...(modified.params as object),
-          auth: {
-            ...((modified.params as ConnectParams)?.auth as object),
-            token: config.gatewayToken,
-          },
-        },
-      };
-    }
-
-    const final = (useDeviceIdentity && nonce)
-      ? injectDeviceIdentity(modified, nonce)
-      : modified;
-
-    gwWs.send(JSON.stringify(final));
+    const modified = (useDeviceIdentity && nonce)
+      ? injectDeviceIdentity(savedConnectMsg, nonce)
+      : savedConnectMsg;
+    gwWs.send(JSON.stringify(modified));
     handshakeComplete = true;
     flushPending();
   }

@@ -101,29 +101,25 @@ export function CreateTaskDialog({ open, onOpenChange, onCreate }: CreateTaskDia
     }
   }, [handleSubmit]);
 
-  const selectClass = 'cockpit-select h-11 text-sm';
+  const selectClass = 'h-[34px] w-full rounded-md border border-input bg-transparent px-3 text-sm text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none';
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[92vw] gap-4 p-5 sm:max-w-[680px]" onKeyDown={handleKeyDown}>
+      <DialogContent className="sm:max-w-[640px] max-w-[92vw] p-4 gap-3" onKeyDown={handleKeyDown}>
         <DialogHeader>
-          <div className="cockpit-kicker">
-            <span className="text-primary">◆</span>
-            Task Board
-          </div>
-          <DialogTitle className="text-[1.4rem] font-semibold tracking-[-0.03em] text-foreground">Create task</DialogTitle>
-          <DialogDescription className="text-sm text-muted-foreground">Capture the work, set the lane, and leave the board readable for the next handoff.</DialogDescription>
+          <DialogTitle>Create Task</DialogTitle>
+          <DialogDescription className="sr-only">Fill in task details below.</DialogDescription>
         </DialogHeader>
 
         {error && (
-          <div className="cockpit-note text-sm" data-tone="danger">
+          <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2">
             {error}
           </div>
         )}
 
         {/* Title */}
         <div>
-          <label htmlFor="kb-new-title" className="cockpit-field-label mb-2 block">
+          <label htmlFor="kb-new-title" className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1 block">
             Title <span className="text-destructive">*</span>
           </label>
           <Input
@@ -133,7 +129,7 @@ export function CreateTaskDialog({ open, onOpenChange, onCreate }: CreateTaskDia
             onChange={e => setTitle(e.target.value)}
             placeholder="Task title…"
             maxLength={500}
-            className="h-11"
+            className="h-[34px]"
             aria-invalid={title.length > 0 && !isValid}
           />
           {title.length > 0 && trimmedTitle.length === 0 && (
@@ -143,7 +139,7 @@ export function CreateTaskDialog({ open, onOpenChange, onCreate }: CreateTaskDia
 
         {/* Description */}
         <div>
-          <label htmlFor="kb-new-desc" className="cockpit-field-label mb-2 block">
+          <label htmlFor="kb-new-desc" className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1 block">
             Description
           </label>
           <textarea
@@ -152,7 +148,7 @@ export function CreateTaskDialog({ open, onOpenChange, onCreate }: CreateTaskDia
             onChange={e => setDescription(e.target.value)}
             placeholder="Markdown description (optional)…"
             rows={4}
-            className="cockpit-textarea min-h-[144px]"
+            className="w-full min-h-[120px] rounded-md border border-input bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none resize-y"
           />
         </div>
 
@@ -160,7 +156,7 @@ export function CreateTaskDialog({ open, onOpenChange, onCreate }: CreateTaskDia
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           {/* Status */}
           <div>
-            <label htmlFor="kb-new-status" className="cockpit-field-label mb-2 block">
+            <label htmlFor="kb-new-status" className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1 block">
               Status
             </label>
             <select
@@ -177,7 +173,7 @@ export function CreateTaskDialog({ open, onOpenChange, onCreate }: CreateTaskDia
 
           {/* Priority */}
           <div>
-            <label htmlFor="kb-new-priority" className="cockpit-field-label mb-2 block">
+            <label htmlFor="kb-new-priority" className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1 block">
               Priority
             </label>
             <select
@@ -194,7 +190,7 @@ export function CreateTaskDialog({ open, onOpenChange, onCreate }: CreateTaskDia
 
           {/* Labels */}
           <div>
-            <label htmlFor="kb-new-labels" className="cockpit-field-label mb-2 block">
+            <label htmlFor="kb-new-labels" className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1 block">
               Labels
             </label>
             <Input
@@ -202,14 +198,14 @@ export function CreateTaskDialog({ open, onOpenChange, onCreate }: CreateTaskDia
               value={labelsRaw}
               onChange={e => setLabelsRaw(e.target.value)}
               placeholder="bug, frontend, urgent"
-              className="h-11"
+              className="h-[34px]"
             />
-            <p className="mt-1 text-[11px] text-muted-foreground">Comma-separated</p>
+            <p className="text-[10px] text-muted-foreground mt-0.5">Comma-separated</p>
           </div>
 
           {/* Assignee */}
           <div>
-            <label htmlFor="kb-new-assignee" className="cockpit-field-label mb-2 block">
+            <label htmlFor="kb-new-assignee" className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground mb-1 block">
               Assignee
             </label>
             <Input
@@ -217,7 +213,7 @@ export function CreateTaskDialog({ open, onOpenChange, onCreate }: CreateTaskDia
               value={assignee}
               onChange={e => setAssignee(e.target.value)}
               placeholder="operator"
-              className="h-11"
+              className="h-[34px]"
             />
           </div>
         </div>

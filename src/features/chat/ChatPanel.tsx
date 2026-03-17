@@ -33,8 +33,6 @@ interface ChatPanelProps {
   loadMore?: () => boolean;
   /** Whether there are older messages to load */
   hasMore?: boolean;
-  /** Mobile file browser toggle handler */
-  onToggleFileBrowser?: () => void;
 }
 
 export interface ChatPanelHandle {
@@ -48,7 +46,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
   processingStage,
   lastEventTimestamp = 0, currentToolDescription = null, activityLog = [],
   onWakeWordState, onReset, searchOpen, onSearchClose, id, agentName = 'Agent',
-  loadMore, hasMore = false, onToggleFileBrowser,
+  loadMore, hasMore = false,
 }, ref) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const messageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -230,7 +228,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
         onReset={onReset}
         onAbort={onAbort}
         isGenerating={isGenerating}
-        onToggleFileBrowser={onToggleFileBrowser}
       />
 
       {/* Search Bar */}

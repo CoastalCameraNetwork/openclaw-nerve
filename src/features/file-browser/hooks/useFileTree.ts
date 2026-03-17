@@ -3,7 +3,6 @@ import type { TreeEntry } from '../types';
 
 const STORAGE_KEY = 'nerve-file-tree-expanded';
 
-/** Load expanded paths from localStorage for persistence. */
 function loadExpandedPaths(): Set<string> {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
@@ -12,7 +11,6 @@ function loadExpandedPaths(): Set<string> {
   return new Set<string>();
 }
 
-/** Save expanded paths to localStorage for persistence. */
 function saveExpandedPaths(paths: Set<string>) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify([...paths]));
@@ -36,22 +34,6 @@ function mergeChildren(
   });
 }
 
-/** Clear cached children for a directory entry and reset to unloaded state */
-function clearEntryFromTree(entries: TreeEntry[], targetPath: string): TreeEntry[] {
-  return entries.map((entry) => {
-    if (entry.path === targetPath && entry.type === 'directory') {
-      // Reset to unloaded state
-      return { ...entry, children: null };
-    }
-    if (entry.children && entry.type === 'directory') {
-      // Recursively process children
-      return { ...entry, children: clearEntryFromTree(entry.children, targetPath) };
-    }
-    return entry;
-  });
-}
-
-/** Hook for managing file tree state with workspace info and persistence. */
 export function useFileTree() {
   const [entries, setEntries] = useState<TreeEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -59,7 +41,6 @@ export function useFileTree() {
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(loadExpandedPaths);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
-  const [workspaceInfo, setWorkspaceInfo] = useState<{ isCustomWorkspace: boolean; rootPath: string } | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -77,36 +58,13 @@ export function useFileTree() {
     try {
       const params = dirPath ? `?path=${encodeURIComponent(dirPath)}&depth=1` : '?depth=1';
       const res = await fetch(`/api/files/tree${params}`);
-      if (!res.ok) {
-        if (dirPath && (res.status === 400 || res.status === 404)) {
-          // Evict this path from expandedPaths and clear cached children
-          setExpandedPaths(prev => {
-            const next = new Set(prev);
-            // Remove the path and all descendants
-            for (const path of next) {
-              if (path === dirPath || path.startsWith(`${dirPath}/`)) {
-                next.delete(path);
-              }
-            }
-            return next;
-          });
-
-          // Clear cached children for this entry
-          setEntries(prev => {
-            return clearEntryFromTree(prev, dirPath);
-          });
-        }
-        return null;
-      }
+      if (!res.ok) return null;
       const data = await res.json();
-      if (data.ok && data.workspaceInfo) {
-        setWorkspaceInfo(data.workspaceInfo);
-      }
       return data.ok ? data.entries : null;
     } catch {
       return null;
     }
-  }, [setExpandedPaths, setEntries]);
+  }, []);
 
   // Initial load
   const loadRoot = useCallback(async () => {
@@ -241,7 +199,6 @@ export function useFileTree() {
     expandedPaths,
     selectedPath,
     loadingPaths,
-    workspaceInfo,
     toggleDirectory,
     selectFile,
     refresh,

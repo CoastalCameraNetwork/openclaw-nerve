@@ -76,7 +76,7 @@ openclaw devices approve <requestId>
 
 ### Browser keeps old credentials
 
-**Fix:** Clear site data or remove `localStorage.oc-config`. Nerve stores the gateway URL and any manually-entered token there for reconnects, so a stale manual token can override the official managed connection path.
+**Fix:** Open a new tab or private window. Nerve stores the gateway token in `sessionStorage`, which clears when the tab closes.
 
 ## Security notes
 

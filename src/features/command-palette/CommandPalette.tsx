@@ -11,11 +11,11 @@ interface CommandPaletteProps {
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
-  actions: 'Actions',
-  navigation: 'Navigation',
-  settings: 'Settings',
-  appearance: 'Appearance',
-  voice: 'Voice',
+  actions: 'ACTIONS',
+  navigation: 'NAVIGATION',
+  settings: 'SETTINGS',
+  appearance: 'APPEARANCE',
+  voice: 'VOICE',
 };
 
 /** Cmd+K command palette overlay with fuzzy search. */
@@ -105,58 +105,42 @@ export function CommandPalette({ open, onClose, commands }: CommandPaletteProps)
   return (
     <Dialog open={open} onOpenChange={(isOpen) => !isOpen && onClose()} modal={false}>
       <DialogPortal>
-        <div className="fixed inset-0 z-50 bg-black/38 backdrop-blur-sm" onClick={onClose} />
+        <div className="fixed inset-0 z-50 bg-black/30" onClick={onClose} />
         <div className="fixed inset-0 z-50 flex items-start justify-center pt-[15vh] pointer-events-none">
           <div 
-            className="cockpit-command-shell pointer-events-auto w-full max-w-[38rem] animate-in fade-in-0 zoom-in-95 duration-150"
+            className="w-full max-w-md bg-card border border-border shadow-2xl overflow-hidden animate-in fade-in-0 zoom-in-95 duration-150 pointer-events-auto"
             onKeyDown={handleKeyDown}
             onClick={(e) => e.stopPropagation()}
           >
             {/* Search input */}
-            <div className="border-b border-border/60 bg-secondary/42 px-4 py-4">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <div className="space-y-1">
-                  <div className="cockpit-kicker">
-                    <CommandIcon size={14} className="text-primary" />
-                    Command Palette
-                  </div>
-                  <p className="text-sm text-muted-foreground">Jump to actions, views, and cockpit toggles.</p>
-                </div>
-                <kbd className="cockpit-kbd hidden sm:inline-flex">esc</kbd>
-              </div>
-              <div className="cockpit-row p-0 pr-2">
-                <Search size={16} className="ml-4 text-muted-foreground shrink-0" />
-                <input
-                  ref={inputRef}
-                  type="text"
-                  value={query}
-                  onChange={(e) => {
-                    setQuery(e.target.value);
-                    setSelectedIndex(0);
-                  }}
-                  placeholder="Search actions, panels, and settings"
-                  className="h-12 flex-1 bg-transparent text-[15px] text-foreground outline-none placeholder:text-muted-foreground"
-                />
-                <span className="hidden text-[11px] text-muted-foreground sm:inline">Enter to run</span>
-              </div>
+            <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border bg-background">
+              <Search size={14} className="text-muted-foreground shrink-0" />
+              <input
+                ref={inputRef}
+                type="text"
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setSelectedIndex(0);
+                }}
+                placeholder="Type a command..."
+                className="flex-1 bg-transparent text-foreground text-[13px] outline-none font-mono placeholder:text-muted-foreground"
+              />
+              <kbd className="hidden sm:inline text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 font-mono">
+                esc
+              </kbd>
             </div>
 
             {/* Command list */}
-            <div ref={listRef} className="max-h-[360px] overflow-y-auto overscroll-contain py-2" onMouseMove={handleMouseMove}>
+            <div ref={listRef} className="max-h-[300px] overflow-y-auto overscroll-contain py-1" onMouseMove={handleMouseMove}>
               {filtered.length === 0 ? (
-                <div className="px-6 py-10 text-center">
-                  <div className="cockpit-badge mx-auto w-fit" data-tone="primary">
-                    <Search size={12} />
-                    No matching command
-                  </div>
-                  <p className="mt-3 text-sm text-muted-foreground">
-                    Try a broader term like <span className="cockpit-code">settings</span> or <span className="cockpit-code">workspace</span>.
-                  </p>
+                <div className="px-3 py-6 text-center text-[12px] text-muted-foreground">
+                  No commands found
                 </div>
               ) : (
                 Object.entries(groupedCommands).map(([category, cmds]) => (
                   <div key={category}>
-                    <div className="cockpit-command-section">
+                    <div className="px-3 py-1.5 text-[9px] font-bold tracking-[1.5px] uppercase text-muted-foreground">
                       {CATEGORY_LABELS[category] || category}
                     </div>
                     {cmds.map((cmd) => {
@@ -168,13 +152,16 @@ export function CommandPalette({ open, onClose, commands }: CommandPaletteProps)
                           data-selected={isSelected}
                           onClick={() => executeCommand(cmd)}
                           onMouseEnter={() => { if (!usingKeyboard) setSelectedIndex(idx); }}
-                          data-active={isSelected}
-                          className="cockpit-command-item"
+                          className={`w-full flex items-center gap-3 px-3 py-2 text-left transition-colors ${
+                            isSelected 
+                              ? 'bg-primary/10 text-primary' 
+                              : 'text-foreground hover:bg-foreground/[0.03]'
+                          }`}
                         >
-                          {cmd.icon || <CommandIcon size={15} className="text-muted-foreground" />}
-                          <span className="flex-1 text-[14px] font-medium text-foreground">{cmd.label}</span>
+                          {cmd.icon || <CommandIcon size={14} className="text-muted-foreground" />}
+                          <span className="flex-1 text-[13px] font-mono">{cmd.label}</span>
                           {cmd.shortcut && (
-                            <kbd className="cockpit-kbd">
+                            <kbd className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 font-mono">
                               {cmd.shortcut}
                             </kbd>
                           )}
@@ -187,15 +174,15 @@ export function CommandPalette({ open, onClose, commands }: CommandPaletteProps)
             </div>
 
             {/* Footer hint */}
-            <div className="flex items-center gap-4 border-t border-border/60 bg-background/45 px-4 py-3 text-[11px] text-muted-foreground">
+            <div className="px-3 py-2 border-t border-border bg-background text-[10px] text-muted-foreground flex items-center gap-4">
               <span className="flex items-center gap-1">
-                <kbd className="cockpit-kbd">↑↓</kbd> navigate
+                <kbd className="bg-muted px-1 py-0.5">↑↓</kbd> navigate
               </span>
               <span className="flex items-center gap-1">
-                <kbd className="cockpit-kbd">↵</kbd> run
+                <kbd className="bg-muted px-1 py-0.5">↵</kbd> select
               </span>
               <span className="flex items-center gap-1">
-                <kbd className="cockpit-kbd">esc</kbd> close
+                <kbd className="bg-muted px-1 py-0.5">esc</kbd> close
               </span>
             </div>
           </div>

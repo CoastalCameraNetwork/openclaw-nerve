@@ -122,8 +122,8 @@ The server detects `EADDRINUSE` and exits with a clear error (see `server/index.
 **Fix:**
 - Verify the gateway is running: `openclaw gateway status`
 - Check token: the server reads `GATEWAY_TOKEN` or `OPENCLAW_GATEWAY_TOKEN` env var
-- For trusted official-gateway access, `/api/connect-defaults` advertises `serverSideAuth=true` and Nerve connects with an empty browser-side token
-- For custom gateway URLs or untrusted access, enter the token manually in the connection dialog
+- For local access, `/api/connect-defaults` auto-provides the token (loopback only)
+- For remote access, the token is NOT auto-provided (security). Enter it manually in the connection dialog
 
 ### Connection drops and "SIGNAL LOST" banner
 
@@ -144,21 +144,17 @@ curl http://127.0.0.1:3080/health
 **Fix:**
 - If gateway is unreachable, restart it: `openclaw gateway restart`
 - If persistent, check firewall rules or network configuration
-- If a stale manual token is saved in `localStorage`, clear `oc-config` and reload before reconnecting
+- The client stores credentials in `sessionStorage` (cleared on tab close) — if credentials are lost, reconnect manually
 
 ### Auto-connect doesn't work
 
 **Symptom:** ConnectDialog appears even though the gateway is running.
 
-**Cause:** The frontend fetches `/api/connect-defaults` on mount, but auto-connect only happens when:
-- `serverSideAuth=true`
-- the saved gateway URL is empty or matches the server's official gateway URL
-- the initial connect attempt succeeds
+**Cause:** The frontend fetches `/api/connect-defaults` on mount. This endpoint only returns the token for loopback clients (127.0.0.1, ::1).
 
 **Fix:**
-- If you want the managed path, clear stale browser config (`localStorage.oc-config`) and reload
-- If you are using a custom gateway URL, manual token entry is expected
-- If you are remote but authenticated and using the official gateway URL, the dialog should not be required after stale config is cleared
+- If accessing Nerve remotely (SSH tunnel, reverse proxy), you must enter the gateway URL and token manually
+- Alternatively, set the gateway URL in the connection dialog — the server's WebSocket proxy handles the actual connection
 
 ---
 
@@ -197,11 +193,11 @@ WS_ALLOWED_HOSTS=mygateway.local npm start
 **Symptom:** Server logs show `[ws-proxy] Gateway closed: code=1008, reason=unauthorized: device token mismatch`.
 
 **Causes:**
-1. **Stale browser config.** The browser may still have an old manually-entered token saved in `localStorage` (`oc-config`), often from an older build or a custom gateway connection.
+1. **Stale browser token.** The browser caches the gateway token in `sessionStorage`. If the token changes (e.g., after re-running setup or restarting the gateway), the browser still sends the old one.
 2. **Token mismatch across config files.** OpenClaw 2026.2.19 has a known bug where `openclaw onboard` writes different tokens to the systemd service file and `openclaw.json`. The gateway uses the systemd env var; Nerve reads from `.env`.
 
-**Fix (stale browser config):**
-Clear site data or remove `localStorage.oc-config`, then reload so the official managed gateway path can reconnect with an empty token.
+**Fix (stale browser):**
+Close the tab completely and open a fresh one (or use incognito). `sessionStorage` is cleared on tab close.
 
 **Fix (token mismatch):**
 Re-run the setup wizard — it reads the real token from the systemd service file and aligns everything:
@@ -407,7 +403,7 @@ MEMORY_PATH=/path/to/.openclaw/workspace/MEMORY.md
 
 ### Sessions don't appear in sidebar
 
-**Symptom:** Session list is empty or only shows one recent root session.
+**Symptom:** Session list is empty or shows only the main session.
 
 **Cause:** Sessions are fetched via gateway RPC `sessions.list` with `activeMinutes: 120` filter.
 
@@ -420,11 +416,11 @@ MEMORY_PATH=/path/to/.openclaw/workspace/MEMORY.md
 
 **Symptom:** "Timed out waiting for subagent to spawn" error.
 
-**Cause:** Spawning uses a polling approach — sends a `[spawn-subagent]` chat message to the selected root session, then polls `sessions.list` every 2s for up to 30s waiting for a new subagent session to appear.
+**Cause:** Spawning uses a polling approach — sends a `[spawn-subagent]` chat message to the main session, then polls `sessions.list` every 2s for up to 30s waiting for a new subagent session to appear.
 
 **Fix:**
-- The selected root agent must be running and able to process the spawn request
-- Check that the selected root session isn't busy with another task
+- The main agent must be running and able to process the spawn request
+- Check that the main session isn't busy with another task
 - Check gateway logs for spawn errors
 
 ### Session status stuck on "THINKING"

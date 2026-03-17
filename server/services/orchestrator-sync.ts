@@ -63,6 +63,8 @@ export async function syncSessionsToKanban(): Promise<{ synced: number; errors: 
     for (const session of sessions) {
       const label = String(session.label ?? '');
       const sessionStatus = String(session.status ?? '');
+      const output = String(session.output ?? '');
+      const error = String(session.error ?? '');
 
       // Extract task ID from label (format: orch-{taskId}-{agentName})
       const match = label.match(/^orch-(.+?)-([^ -]+)$/);
@@ -71,6 +73,7 @@ export async function syncSessionsToKanban(): Promise<{ synced: number; errors: 
       }
 
       const taskId = match[1];
+      const agentName = match[2];
       tasksWithSessions.add(taskId);
 
       // Only process completed/failed sessions
@@ -89,13 +92,26 @@ export async function syncSessionsToKanban(): Promise<{ synced: number; errors: 
         continue;
       }
 
-      // Update task to review
+      // Update task to review AND save agent output
       try {
-        await store.updateTask(taskId, task.version, {
-          status: 'review',
-        });
+        const updates: any = { status: 'review' };
+        
+        // Save agent output to task metadata before session expires
+        if (output || error) {
+          const existingMeta = (task as any).metadata || {};
+          const agentOutput = existingMeta.agentOutput || {};
+          agentOutput[agentName] = {
+            output: output || null,
+            error: error || null,
+            capturedAt: Date.now(),
+            sessionStatus: sessionStatus,
+          };
+          updates.metadata = { ...existingMeta, agentOutput };
+        }
+        
+        await store.updateTask(taskId, task.version, updates);
         synced++;
-        console.log(`[orchestrator-sync] Task ${taskId} moved to review (session: ${label})`);
+        console.log(`[orchestrator-sync] Task ${taskId} moved to review (session: ${label}, output captured)`);
       } catch (err) {
         console.error(`[orchestrator-sync] Failed to update task ${taskId}:`, err);
         errors++;

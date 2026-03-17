@@ -5,7 +5,16 @@ import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import type { KanbanTask, TaskStatus } from './types';
 import { COLUMN_LABELS } from './types';
 import { KanbanCard } from './KanbanCard';
-import { TASK_STATUS_TONE } from './tone';
+
+/* ── Column accent colors ── */
+const COLUMN_ACCENT: Record<TaskStatus, string> = {
+  backlog: 'text-slate-400',
+  todo: 'text-blue-400',
+  'in-progress': 'text-cyan-400',
+  review: 'text-amber-400',
+  done: 'text-green-400',
+  cancelled: 'text-gray-500',
+};
 
 interface KanbanColumnProps {
   status: TaskStatus;
@@ -14,7 +23,7 @@ interface KanbanColumnProps {
 }
 
 export const KanbanColumn = memo(function KanbanColumn({ status, tasks, onCardClick }: KanbanColumnProps) {
-  const accent = TASK_STATUS_TONE[status];
+  const accent = COLUMN_ACCENT[status];
 
   // Make the column itself a drop target (for dropping into empty columns)
   const { setNodeRef, isOver: isDirectlyOver } = useDroppable({ id: status });
@@ -30,17 +39,18 @@ export const KanbanColumn = memo(function KanbanColumn({ status, tasks, onCardCl
 
   return (
     <div
-      className={`shell-panel flex h-full min-w-[280px] w-[320px] max-w-[360px] shrink-0 flex-col overflow-hidden rounded-[24px] transition-[border-color,background-color,box-shadow] duration-150 ${
-        isOverColumn ? 'border-primary/45 bg-primary/[0.06] shadow-[0_18px_38px_rgba(0,0,0,0.22)]' : ''
+      className={`flex flex-col min-w-[280px] w-[320px] max-w-[360px] h-full shrink-0 bg-background/50 rounded-lg border transition-colors duration-150 ${
+        isOverColumn ? 'border-primary/50 bg-primary/5' : 'border-border/40'
       }`}
     >
-      <div className="sticky top-0 z-10 flex h-11 items-center justify-between border-b border-border/55 bg-card/78 px-3 backdrop-blur-lg">
+      {/* Sticky column header (§19.2: 40px) */}
+      <div className="sticky top-0 z-10 flex items-center justify-between h-10 px-3 bg-background/80 backdrop-blur-sm border-b border-border/40 rounded-t-lg">
         <div className="flex items-center gap-2">
-          <span className={`text-[11px] font-semibold uppercase tracking-[0.18em] ${accent.textClass}`}>
+          <span className={`text-xs font-bold uppercase tracking-wider ${accent}`}>
             {COLUMN_LABELS[status]}
           </span>
         </div>
-        <span className={`inline-flex min-w-[28px] items-center justify-center rounded-full border px-2 py-0.5 text-[10px] font-semibold tabular-nums ${accent.badgeClass}`}>
+        <span className="text-[10px] font-semibold text-muted-foreground bg-muted px-1.5 py-0.5 rounded-sm tabular-nums">
           {tasks.length}
         </span>
       </div>
@@ -49,12 +59,12 @@ export const KanbanColumn = memo(function KanbanColumn({ status, tasks, onCardCl
       <SortableContext items={taskIds} strategy={verticalListSortingStrategy}>
         <div
           ref={setNodeRef}
-          className="flex min-h-[120px] flex-1 flex-col gap-2 overflow-y-auto p-2.5"
+          className="flex-1 overflow-y-auto p-2 flex flex-col gap-2 min-h-[120px]"
         >
           {tasks.length === 0 ? (
-            <div className="flex flex-1 flex-col items-center justify-center py-8 text-muted-foreground/60 select-none">
-              <Inbox size={18} className="mb-2" />
-              <span className="cockpit-badge">No tasks</span>
+            <div className="flex-1 flex flex-col items-center justify-center py-8 text-muted-foreground/60 select-none">
+              <Inbox size={20} className="mb-1.5" />
+              <span className="text-[11px]">No tasks</span>
             </div>
           ) : (
             tasks.map(task => (

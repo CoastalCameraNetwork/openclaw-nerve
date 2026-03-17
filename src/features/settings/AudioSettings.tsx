@@ -47,11 +47,6 @@ const EDGE_ENGLISH_VOICE_OPTIONS: EdgeVoiceOption[] = [
   { value: 'en-IE-EmilyNeural', label: 'Emily (IE)' },
 ];
 
-const INLINE_SELECT_TRIGGER_CLASS =
-  'min-h-11 w-full justify-between rounded-2xl border-border/80 bg-background/65 px-3 py-2 text-left text-sm font-sans text-foreground sm:w-auto';
-const INLINE_SELECT_MENU_CLASS =
-  'rounded-2xl border-border/80 bg-card/98 p-1 shadow-[0_20px_48px_rgba(0,0,0,0.28)]';
-
 function getEdgeVoiceOptions(
   lang: string,
   support: LanguageSupportEntry[] | null,
@@ -174,8 +169,8 @@ function ExpandableInput({
   }, [expanded]);
 
   return (
-    <div ref={containerRef} className="cockpit-row flex-col items-stretch gap-2">
-      <span className="cockpit-field-label">{label}</span>
+    <div ref={containerRef} className="flex flex-col gap-1 px-3 py-2.5 bg-background border border-border/60 hover:border-muted-foreground transition-all">
+      <span className="text-[10px] text-muted-foreground uppercase tracking-[1px]">{label}</span>
       {expanded ? (
         <textarea
           ref={textareaRef}
@@ -183,13 +178,13 @@ function ExpandableInput({
           onChange={(e) => onChange(e.target.value)}
           onBlur={collapse}
           rows={4}
-          className="min-h-[96px] w-full resize-none border-none bg-transparent p-0 text-sm text-foreground/82 outline-none transition-all"
+          className="w-full bg-transparent text-[11px] font-mono text-foreground/80 resize-none outline-none border-none p-0 transition-all"
           placeholder={placeholder}
         />
       ) : (
         <div
           onClick={() => setExpanded(true)}
-          className="w-full cursor-text truncate text-sm text-foreground/72 opacity-80 transition-opacity hover:opacity-100"
+          className="w-full text-[11px] font-mono text-foreground/80 truncate cursor-text opacity-70 hover:opacity-100 transition-opacity"
           title={value || placeholder}
         >
           {value || <span className="text-muted-foreground">{placeholder}</span>}
@@ -273,12 +268,9 @@ function SttModelSelector({ model, onModelChange }: { model: string; onModelChan
   }, [onModelChange]);
 
   return (
-    <div className="space-y-3">
-      <div className="cockpit-row items-start justify-between">
-        <div className="min-w-0 flex-1">
-          <span className="text-sm font-medium text-foreground">STT model</span>
-          <p className="mt-1 text-xs text-muted-foreground">Choose the local Whisper model for browser-backed transcription.</p>
-        </div>
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center justify-between px-3 py-2.5 bg-background border border-border/60 hover:border-muted-foreground transition-colors">
+        <span className="text-[12px]">Model</span>
         <InlineSelect
           value={model}
           onChange={handleModelChange}
@@ -291,24 +283,23 @@ function SttModelSelector({ model, onModelChange }: { model: string; onModelChan
             { value: 'small.en', label: 'small.en (466MB, English only)' },
           ]}
           ariaLabel="STT Model"
-          triggerClassName={`${INLINE_SELECT_TRIGGER_CLASS} min-w-[188px]`}
-          menuClassName={`${INLINE_SELECT_MENU_CLASS} min-w-[250px]`}
+          menuClassName="min-w-[250px]"
           dropUp
         />
       </div>
 
       {/* Download progress */}
       {download?.downloading && (
-        <div className="cockpit-note" data-tone="primary">
+        <div className="flex flex-col gap-1 px-3 py-2 bg-background border border-primary/30">
           <div className="flex items-center gap-2">
             <Download size={12} className="text-primary animate-pulse" />
-            <span className="font-mono text-[11px] text-primary">
+            <span className="text-[10px] text-primary font-mono">
               Downloading {download.model}... {download.percent}%
             </span>
           </div>
-          <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-border/40">
+          <div className="w-full h-1 bg-border/40 overflow-hidden">
             <div
-              className="h-full rounded-full bg-primary transition-all duration-300"
+              className="h-full bg-primary transition-all duration-300"
               style={{ width: `${download.percent}%` }}
             />
           </div>
@@ -316,26 +307,24 @@ function SttModelSelector({ model, onModelChange }: { model: string; onModelChan
       )}
 
       {download && !download.downloading && download.error && (
-        <div className="cockpit-note" data-tone="danger">
-          <span className="font-mono text-[11px] text-destructive">Download failed: {download.error}</span>
+        <div className="px-3 py-2 bg-background border border-red/30">
+          <span className="text-[10px] text-red font-mono">Download failed: {download.error}</span>
         </div>
       )}
 
       {download && !download.downloading && !download.error && (
-        <div className="cockpit-note border-green/25 bg-green/8 text-green">
-          <span className="font-mono text-[11px] animate-pulse">✓ Model ready</span>
+        <div className="px-3 py-2 bg-background border border-green/30">
+          <span className="text-[10px] text-green font-mono animate-pulse">✓ Model ready</span>
         </div>
       )}
 
       {/* No-GPU warning for heavier models */}
       {hasGpu === false && model !== 'tiny' && model !== 'tiny.en' && (
-        <div className="rounded-[18px] border border-orange/30 bg-orange/6 px-3 py-3 text-orange/85">
-          <div className="flex items-start gap-2">
+        <div className="flex items-start gap-2 px-3 py-2 bg-background border border-orange/30">
           <AlertTriangle size={12} className="text-orange shrink-0 mt-0.5" />
-          <span className="text-[11px]">
+          <span className="text-[10px] text-orange/80">
             No GPU detected — {model.includes('small') ? `${model} will be very slow on CPU` : `${model} may be slow on CPU`}. Use tiny for faster multilingual transcription.
           </span>
-          </div>
         </div>
       )}
     </div>
@@ -378,33 +367,33 @@ function ApiKeyInput({
 
   if (saved) {
     return (
-      <div className="cockpit-note border-green/25 bg-green/8 text-green">
-        <span className="font-mono text-[11px]">✓ {keyName} saved</span>
+      <div className="px-3 py-2 bg-background border border-green/30">
+        <span className="text-[10px] text-green font-mono">✓ {keyName} saved</span>
       </div>
     );
   }
 
   return (
-    <div className="rounded-[20px] border border-orange/28 bg-orange/6 px-4 py-4">
+    <div className="flex flex-col gap-1.5 px-3 py-2.5 bg-background border border-orange/30">
       <div className="flex items-center gap-2">
         <KeyRound size={12} className="text-orange shrink-0" />
-        <span className="text-[11px] text-orange">{keyName} required for {provider}</span>
+        <span className="text-[10px] text-orange">{keyName} required for {provider}</span>
       </div>
-      <div className="mt-3 flex gap-2">
+      <div className="flex gap-1.5">
         <input
           type="password"
           value={value}
           onChange={(e) => setValue(e.target.value)}
           placeholder={`Paste your ${keyName}...`}
-          className="cockpit-input cockpit-input-mono h-11 flex-1"
+          className="flex-1 bg-background/60 border border-border/60 px-2 py-1 text-[10px] font-mono text-foreground/80 outline-none focus:border-orange/60 placeholder:text-muted-foreground/40"
           onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); }}
         />
         <button
           onClick={handleSave}
           disabled={saving || !value.trim()}
-          className="cockpit-toolbar-button px-4 text-[11px] disabled:cursor-not-allowed disabled:opacity-40"
+          className="px-2 py-1 text-[10px] font-mono uppercase tracking-wide border border-orange/40 text-orange hover:bg-orange/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {saving ? 'Saving...' : 'Save'}
+          {saving ? '...' : 'Save'}
         </button>
       </div>
     </div>
@@ -448,12 +437,7 @@ export function AudioSettings({
   const models = PROVIDER_MODELS[ttsProvider] || [];
   const showInput = section === 'all' || section === 'input';
   const showOutput = section === 'all' || section === 'output';
-  const headingLabel = section === 'input' ? 'Input Capture' : section === 'output' ? 'Voice Output' : 'Audio';
-  const headingCopy = section === 'input'
-    ? 'Tune language detection, wake phrases, and transcription before speech reaches the agent.'
-    : section === 'output'
-      ? 'Shape the speaking voice, model, and playback behavior for replies and announcements.'
-      : '';
+  const headingLabel = section === 'input' ? 'AUDIO INPUT' : section === 'output' ? 'VOICE OUTPUT' : 'AUDIO';
   const { config, saved, updateField } = useTTSConfig();
   const { state: langState, support, isMultilingual, setLanguage } = useLanguage();
 
@@ -591,24 +575,18 @@ export function AudioSettings({
 
   return (
     <div className="space-y-4">
-      <div className="space-y-1.5">
-        <span className="cockpit-kicker">
-          <span className="text-primary">◆</span>
-          {headingLabel}
-        </span>
-        {headingCopy && <p className="cockpit-copy max-w-[36ch]">{headingCopy}</p>}
-      </div>
+      <h3 className="text-[10px] font-bold tracking-[1.5px] uppercase text-muted-foreground flex items-center gap-2">
+        <span className="text-green">◆</span>
+        {headingLabel}
+      </h3>
 
       {/* Language Preference */}
       {showInput && langState && (
-        <div className="space-y-3">
-          <div className="cockpit-row flex-col items-stretch gap-3">
-            <div className="flex min-w-0 items-start gap-3">
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-center justify-between px-3 py-2.5 bg-background border border-border/60 hover:border-muted-foreground transition-colors">
+            <div className="flex items-center gap-3">
               <Globe size={14} className="text-primary" aria-hidden="true" />
-              <div className="flex min-w-0 flex-col">
-                <span className="text-sm font-medium text-foreground">Language</span>
-                <span className="text-xs text-muted-foreground">Match wake phrases, STT support, and voice options to the language you actually use.</span>
-              </div>
+              <span className="text-[12px]">Language</span>
             </div>
             <InlineSelect
               value={langState.language}
@@ -618,46 +596,40 @@ export function AudioSettings({
                 label: `${l.name} — ${l.nativeName}`,
               }))}
               ariaLabel="Voice Language"
-              triggerClassName={`${INLINE_SELECT_TRIGGER_CLASS} w-full justify-between`}
-              menuClassName={`${INLINE_SELECT_MENU_CLASS} min-w-[220px] max-w-[calc(100vw-2rem)]`}
+              menuClassName="min-w-[200px]"
             />
           </div>
 
           {/* Compatibility warnings */}
           {showEnglishOnlyWarning && (
-            <div className="rounded-[18px] border border-orange/30 bg-orange/6 px-3 py-3 text-orange/85">
-              <div className="flex items-start gap-2">
+            <div className="flex items-start gap-2 px-3 py-2 bg-background border border-orange/30">
               <AlertTriangle size={12} className="text-orange shrink-0 mt-0.5" />
-              <span className="text-[11px]">
+              <span className="text-[10px] text-orange/80">
                 Current model is English-only. Switch to a multilingual model below for {currentLangInfo?.name || langState.language} transcription.
               </span>
-              </div>
             </div>
           )}
 
           {showTinyAccuracyWarning && (
-            <div className="rounded-[18px] border border-orange/30 bg-orange/6 px-3 py-3 text-orange/85">
-              <div className="flex items-start gap-2">
+            <div className="flex items-start gap-2 px-3 py-2 bg-background border border-orange/30">
               <AlertTriangle size={12} className="text-orange shrink-0 mt-0.5" />
-              <div className="flex flex-1 items-start justify-between gap-2">
-                <span className="text-[11px]">
+              <div className="flex-1 flex items-start justify-between gap-2">
+                <span className="text-[10px] text-orange/80">
                   Tiny is fast, but conversational {currentLangInfo?.name || langState.language} can be less accurate. Use base for better results.
                 </span>
                 <button
                   onClick={() => onSttModelChange('base')}
-                  className="cockpit-toolbar-button shrink-0 border-orange/40 px-3 text-[11px] text-orange hover:border-orange/55 hover:bg-orange/10"
+                  className="px-2 py-1 text-[10px] font-mono uppercase tracking-wide border border-orange/50 text-orange hover:bg-orange/10 transition-colors shrink-0"
                 >
                   Use base
                 </button>
-              </div>
               </div>
             </div>
           )}
 
           {/* Configure Voice Phrases button — available for all languages (including English) */}
-          <div className="space-y-2">
+          <div className="space-y-1">
             <button
-              type="button"
               onClick={() => {
                 setPhrasesModal({
                   open: true,
@@ -666,21 +638,18 @@ export function AudioSettings({
                   nativeName: currentLangInfo?.nativeName || langState.language,
                 });
               }}
-              className="cockpit-row group w-full items-start justify-between text-left"
+              className="w-full flex items-center justify-between px-3 py-2.5 bg-background border border-border/60 hover:border-primary transition-colors group"
             >
-              <div className="flex items-start gap-3">
+              <div className="flex items-center gap-3">
                 <Mic size={14} className="text-primary" aria-hidden="true" />
-                <div className="flex flex-col">
-                  <span className="text-sm font-medium text-foreground">Voice phrases</span>
-                  <span className="text-xs text-muted-foreground">Customize wake, send, and cancel phrases for {currentLangInfo?.name || langState.language}.</span>
-                </div>
+                <span className="text-[12px]">Voice Phrases</span>
               </div>
-              <span className="cockpit-badge group-hover:text-primary" data-tone={phrasesStatus[langState.language]?.configured ? 'primary' : undefined}>
-                {phrasesStatus[langState.language]?.configured ? 'Edit' : 'Configure'}
+              <span className="text-[10px] text-muted-foreground group-hover:text-primary transition-colors">
+                {phrasesStatus[langState.language]?.configured ? 'Edit ›' : 'Configure ›'}
               </span>
             </button>
             {!phrasesStatus[langState.language]?.configured && (
-              <span className="cockpit-field-hint px-1">
+              <span className="text-[10px] text-muted-foreground/80 px-1">
                 Optional: customize wake/send/cancel phrases for {currentLangInfo?.name || langState.language}.
               </span>
             )}
@@ -691,17 +660,14 @@ export function AudioSettings({
 
       {/* Sound Effects */}
       {showOutput && (
-        <div className="cockpit-row items-start justify-between">
+        <div className="flex items-center justify-between px-3 py-2.5 bg-background border border-border/60 hover:border-muted-foreground transition-colors">
           <div className="flex items-center gap-3">
             {soundEnabled ? (
               <Volume2 size={14} className="text-green" aria-hidden="true" />
             ) : (
               <VolumeX size={14} className="text-muted-foreground" aria-hidden="true" />
             )}
-            <div className="flex flex-col">
-              <span className="text-sm font-medium text-foreground" id="sound-label">Sound effects</span>
-              <span className="text-xs text-muted-foreground">Keep subtle UI cues and audio confirmations enabled.</span>
-            </div>
+            <span className="text-[12px]" id="sound-label">Sound Effects</span>
           </div>
           <Switch
             checked={soundEnabled}
@@ -713,44 +679,47 @@ export function AudioSettings({
 
       {/* TTS Provider */}
       {showOutput && (
-        <div className="space-y-2">
-          <span className="cockpit-field-label">TTS Provider</span>
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[10px] text-muted-foreground uppercase tracking-[1px]">TTS Provider</span>
           <div className="flex gap-2">
             <button
-              type="button"
               onClick={() => onTtsProviderChange('openai')}
-              data-active={ttsProvider === 'openai'}
-              className="shell-chip min-h-11 flex-1 justify-center rounded-2xl px-3 py-2 text-sm font-medium"
+              className={`flex-1 px-3 py-2 text-[11px] font-mono uppercase tracking-wide border transition-colors ${
+                ttsProvider === 'openai'
+                  ? 'bg-primary/20 border-primary text-primary'
+                  : 'bg-background border-border/60 text-muted-foreground hover:border-muted-foreground'
+              }`}
             >
               OpenAI
             </button>
             <button
-              type="button"
               onClick={() => onTtsProviderChange('replicate')}
-              data-active={ttsProvider === 'replicate'}
-              className="shell-chip min-h-11 flex-1 justify-center rounded-2xl px-3 py-2 text-sm font-medium"
+              className={`flex-1 px-3 py-2 text-[11px] font-mono uppercase tracking-wide border transition-colors ${
+                ttsProvider === 'replicate'
+                  ? 'bg-orange/20 border-orange text-orange'
+                  : 'bg-background border-border/60 text-muted-foreground hover:border-muted-foreground'
+              }`}
             >
               Replicate
             </button>
             <button
-              type="button"
               onClick={() => onTtsProviderChange('edge')}
-              data-active={ttsProvider === 'edge'}
-              className="shell-chip min-h-11 flex-1 justify-center rounded-2xl px-3 py-2 text-sm font-medium"
+              className={`flex-1 px-3 py-2 text-[11px] font-mono uppercase tracking-wide border transition-colors ${
+                ttsProvider === 'edge'
+                  ? 'bg-green/20 border-green text-green'
+                  : 'bg-background border-border/60 text-muted-foreground hover:border-muted-foreground'
+              }`}
             >
               Edge (Free)
             </button>
           </div>
-          <p className="cockpit-field-hint px-1">Choose the voice engine first, then tune the model and speaking style below.</p>
 
           {langState?.language && langState.language !== 'en' && ttsProvider === 'replicate' && !langState.providers.qwen3 && (
-            <div className="rounded-[18px] border border-orange/30 bg-orange/6 px-3 py-3 text-orange/85">
-              <div className="flex items-start gap-2">
+            <div className="flex items-start gap-2 px-3 py-2 bg-background border border-orange/30">
               <AlertTriangle size={12} className="text-orange shrink-0 mt-0.5" />
-              <span className="text-[11px]">
+              <span className="text-[10px] text-orange/80">
                 Qwen3 doesn't support {langState.supported.find((l) => l.code === langState.language)?.name || langState.language}. Voice output will use English.
               </span>
-              </div>
             </div>
           )}
 
@@ -767,45 +736,35 @@ export function AudioSettings({
 
       {/* TTS Model (shown when provider has multiple models) */}
       {showOutput && models.length > 0 && (
-        <div className="cockpit-row items-start justify-between">
-          <div className="min-w-0 flex-1">
-            <span className="text-sm font-medium text-foreground">TTS model</span>
-            <p className="mt-1 text-xs text-muted-foreground">Select the synthesis model exposed by the active provider.</p>
-          </div>
+        <div className="flex items-center justify-between px-3 py-2.5 bg-background border border-border/60 hover:border-muted-foreground transition-colors">
+          <span className="text-[12px]">Model</span>
           <InlineSelect
             value={ttsModel}
             onChange={onTtsModelChange}
             options={models}
             ariaLabel="TTS Model"
-            triggerClassName={`${INLINE_SELECT_TRIGGER_CLASS} min-w-[188px]`}
-            menuClassName={`${INLINE_SELECT_MENU_CLASS} min-w-[200px]`}
+            menuClassName="min-w-[200px]"
           />
         </div>
       )}
 
       {/* Voice Config */}
       {showOutput && config && (
-        <div className="space-y-3">
+        <div className="space-y-2">
           {saved && (
-            <div className="cockpit-note border-green/25 bg-green/8 text-green">
-              <span className="font-mono text-[11px] animate-pulse">Saved ✓</span>
-            </div>
+            <span className="text-[10px] text-green font-mono animate-pulse">Saved ✓</span>
           )}
 
           {ttsProvider === 'openai' && (
             <>
-              <div className="cockpit-row items-start justify-between">
-                <div className="min-w-0 flex-1">
-                  <span className="text-sm font-medium text-foreground">Voice</span>
-                  <p className="mt-1 text-xs text-muted-foreground">Pick the OpenAI voice profile used for reply playback.</p>
-                </div>
+              <div className="flex items-center justify-between px-3 py-2.5 bg-background border border-border/60 hover:border-muted-foreground transition-colors">
+                <span className="text-[12px]">Voice</span>
                 <InlineSelect
                   value={config.openai.voice}
                   onChange={(v) => updateField('openai', 'voice', v)}
                   options={OPENAI_VOICES}
                   ariaLabel="OpenAI Voice"
-                  triggerClassName={`${INLINE_SELECT_TRIGGER_CLASS} min-w-[220px]`}
-                  menuClassName={`${INLINE_SELECT_MENU_CLASS} min-w-[260px]`}
+                  menuClassName="min-w-[260px]"
                 />
               </div>
               <ExpandableInput
@@ -818,18 +777,14 @@ export function AudioSettings({
           )}
 
           {ttsProvider === 'edge' && (
-            <div className="cockpit-row items-start justify-between">
-              <div className="min-w-0 flex-1">
-                <span className="text-sm font-medium text-foreground">Voice</span>
-                <p className="mt-1 text-xs text-muted-foreground">Use a language-matched Edge voice for free local playback.</p>
-              </div>
+            <div className="flex items-center justify-between px-3 py-2.5 bg-background border border-border/60 hover:border-muted-foreground transition-colors">
+              <span className="text-[12px]">Voice</span>
               <InlineSelect
                 value={config.edge.voice}
                 onChange={(v) => updateField('edge', 'voice', v)}
                 options={edgeVoicesForLang}
                 ariaLabel="Edge Voice"
-                triggerClassName={`${INLINE_SELECT_TRIGGER_CLASS} min-w-[188px]`}
-                menuClassName={`${INLINE_SELECT_MENU_CLASS} min-w-[180px]`}
+                menuClassName="min-w-[160px]"
               />
             </div>
           )}
@@ -855,7 +810,7 @@ export function AudioSettings({
 
       {/* Wake Word */}
       {showInput && (
-        <div className="cockpit-row items-start justify-between">
+        <div className="flex items-center justify-between px-3 py-2.5 bg-background border border-border/60 hover:border-muted-foreground transition-colors">
           <div className="flex items-center gap-3">
             {wakeWordEnabled ? (
               <Mic size={14} className="text-green" aria-hidden="true" />
@@ -863,8 +818,8 @@ export function AudioSettings({
               <MicOff size={14} className="text-muted-foreground" aria-hidden="true" />
             )}
             <div className="flex flex-col">
-              <span className="text-sm font-medium text-foreground" id="wake-word-label">Wake word</span>
-              <span className="text-xs text-muted-foreground">Say "{wakePhraseDisplay}" to activate.</span>
+              <span className="text-[12px]" id="wake-word-label">Wake Word</span>
+              <span className="text-[10px] text-muted-foreground">Say "{wakePhraseDisplay}" to activate</span>
             </div>
           </div>
           <Switch
@@ -877,36 +832,38 @@ export function AudioSettings({
 
       {/* Speech-to-Text */}
       {showInput && (
-        <div className="space-y-1.5 pt-2">
-          <span className="cockpit-kicker">
-            <span className="text-primary">◆</span>
-            Speech to Text
-          </span>
-        </div>
+        <h3 className="text-[10px] font-bold tracking-[1.5px] uppercase text-muted-foreground flex items-center gap-2 mt-6">
+          <span className="text-green">◆</span>
+          SPEECH-TO-TEXT
+        </h3>
       )}
 
       {showInput && (
-        <div className="space-y-2">
-          <span className="cockpit-field-label">STT Provider</span>
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[10px] text-muted-foreground uppercase tracking-[1px]">STT Provider</span>
           <div className="flex gap-2">
             <button
-              type="button"
               onClick={() => onSttProviderChange('local')}
-              data-active={sttProvider === 'local'}
-              className="shell-chip min-h-11 flex-1 justify-center rounded-2xl px-3 py-2 text-sm font-medium"
+              className={`flex-1 px-3 py-2 text-[11px] font-mono uppercase tracking-wide border transition-colors ${
+                sttProvider === 'local'
+                  ? 'bg-green/20 border-green text-green'
+                  : 'bg-background border-border/60 text-muted-foreground hover:border-muted-foreground'
+              }`}
             >
               Local (Free)
             </button>
             <button
-              type="button"
               onClick={() => onSttProviderChange('openai')}
-              data-active={sttProvider === 'openai'}
-              className="shell-chip min-h-11 flex-1 justify-center rounded-2xl px-3 py-2 text-sm font-medium"
+              className={`flex-1 px-3 py-2 text-[11px] font-mono uppercase tracking-wide border transition-colors ${
+                sttProvider === 'openai'
+                  ? 'bg-primary/20 border-primary text-primary'
+                  : 'bg-background border-border/60 text-muted-foreground hover:border-muted-foreground'
+              }`}
             >
               OpenAI
             </button>
           </div>
-          <span className="cockpit-field-hint px-1">
+          <span className="text-[10px] text-muted-foreground">
             {sttProvider === 'local'
               ? 'Using built-in Whisper model — no API key needed'
               : apiKeys.openai
@@ -922,11 +879,11 @@ export function AudioSettings({
       )}
 
       {showInput && sttProvider === 'local' && (
-        <div className="space-y-2">
-          <div className="cockpit-row items-start justify-between">
+        <div className="flex flex-col gap-1.5">
+          <div className="flex items-start justify-between gap-3 px-3 py-2.5 bg-background border border-border/60 hover:border-muted-foreground transition-colors">
             <div className="flex min-w-0 flex-1 flex-col">
-              <span className="text-sm font-medium text-foreground">Input mode</span>
-              <span className="text-xs text-muted-foreground">Choose whether final text comes from the browser, the backend, or browser-first fallback.</span>
+              <span className="text-[12px]">Input Mode</span>
+              <span className="text-[10px] text-muted-foreground">Choose whether final text comes from the browser, the backend, or browser-first fallback.</span>
             </div>
             <InlineSelect
               value={sttInputMode}
@@ -937,11 +894,11 @@ export function AudioSettings({
                 { value: 'local', label: 'Local' },
               ]}
               ariaLabel="STT Input Mode"
-              triggerClassName={`${INLINE_SELECT_TRIGGER_CLASS} w-full shrink-0 sm:w-[132px]`}
-              menuClassName={`${INLINE_SELECT_MENU_CLASS} min-w-[140px]`}
+              triggerClassName="w-[120px] justify-between shrink-0"
+              menuClassName="min-w-[120px]"
             />
           </div>
-          <span className="cockpit-field-hint px-1">
+          <span className="text-[10px] text-muted-foreground px-1">
             {sttInputMode === 'browser'
               ? 'Use browser speech recognition for the final message. Backend transcription is only used if browser recognition is unavailable.'
               : sttInputMode === 'local'
@@ -952,12 +909,12 @@ export function AudioSettings({
       )}
 
       {showInput && (
-        <div className="cockpit-row items-start justify-between">
+        <div className="flex items-center justify-between px-3 py-2.5 bg-background border border-border/60 hover:border-muted-foreground transition-colors">
           <div className="flex items-center gap-3">
             <Mic size={14} className={liveTranscriptionPreview ? 'text-primary' : 'text-muted-foreground'} aria-hidden="true" />
             <div className="flex flex-col">
-              <span className="text-sm font-medium text-foreground" id="live-transcription-label">Live transcription preview</span>
-              <span className="text-xs text-muted-foreground">Show a browser preview while speaking; the committed transcript may still differ by provider.</span>
+              <span className="text-[12px]" id="live-transcription-label">Live Transcription Preview</span>
+              <span className="text-[10px] text-muted-foreground">Browser preview while speaking; final transcript may differ by provider.</span>
             </div>
           </div>
           <Switch

@@ -243,6 +243,16 @@ const updateTaskSchema = z.object({
   resultAt: z.number().optional().nullable(),
   run: runLinkSchema.optional().nullable(),
   feedback: z.array(feedbackSchema).optional(),
+  pr: z.object({
+    number: z.number().int().min(1),
+    url: z.string().url(),
+    branch: z.string().optional(),
+    status: z.enum(['open', 'closed', 'merged', 'draft']).optional(),
+    reviewComments: z.number().int().min(0).optional(),
+    commits: z.number().int().min(0).optional(),
+    createdAt: z.number().optional(),
+    updatedAt: z.number().optional(),
+  }).optional().nullable(),
 });
 
 const reorderSchema = z.object({

@@ -2,37 +2,49 @@ import { memo, useState, useEffect } from 'react';
 import { Clock, Play, CheckCircle2, AlertCircle, XCircle } from 'lucide-react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import type { KanbanTask } from './types';
-import { getTaskPriorityLabel, getTaskPriorityTone, getTaskRunStatus, getTaskRunTone } from './tone';
+import type { KanbanTask, TaskPriority } from './types';
+import { AgentBadges } from '../orchestrator/AgentBadges';
+
+/* ── Priority colors (from spec §19.4) ── */
+const PRIORITY_DOT: Record<TaskPriority, string> = {
+  critical: 'bg-[#ef4444]',
+  high: 'bg-[#f59e0b]',
+  normal: 'bg-[#3b82f6]',
+  low: 'bg-[#6b7280]',
+};
+
+const PRIORITY_LABEL: Record<TaskPriority, string> = {
+  critical: 'Critical',
+  high: 'High',
+  normal: 'Normal',
+  low: 'Low',
+};
 
 /* ── Run status indicators ── */
 function RunBadge({ status }: { status: string }) {
-  const safeStatus = getTaskRunStatus(status);
-  const tone = getTaskRunTone(safeStatus);
-
-  switch (safeStatus) {
+  switch (status) {
     case 'running':
       return (
-        <span className={`inline-flex items-center gap-1 text-[10px] font-semibold ${tone.textClass}`}>
-          <span className="h-1.5 w-1.5 rounded-full bg-current animate-pulse" />
+        <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-cyan-400">
+          <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
           Live
         </span>
       );
     case 'done':
       return (
-        <span className={`inline-flex items-center gap-1 text-[10px] font-semibold ${tone.textClass}`}>
+        <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-green-400">
           <CheckCircle2 size={10} /> Done
         </span>
       );
     case 'error':
       return (
-        <span className={`inline-flex items-center gap-1 text-[10px] font-semibold ${tone.textClass}`}>
+        <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-red-400">
           <AlertCircle size={10} /> Error
         </span>
       );
     case 'aborted':
       return (
-        <span className={`inline-flex items-center gap-1 text-[10px] font-semibold ${tone.textClass}`}>
+        <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-gray-400">
           <XCircle size={10} /> Aborted
         </span>
       );
@@ -94,27 +106,24 @@ function CardContent({
   isDragging?: boolean;
   isOverlay?: boolean;
 }) {
-  const priorityTone = getTaskPriorityTone(task.priority);
-  const priorityLabel = getTaskPriorityLabel(task.priority);
-
   return (
     <button
       type="button"
       onClick={() => { if (!isDragging) onClick(task); }}
-      className={`group w-full cursor-pointer rounded-[18px] border border-border/70 bg-background/58 px-3 py-3 text-left shadow-[0_10px_26px_rgba(0,0,0,0.14)] transition-[transform,box-shadow,border-color,background-color,opacity] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+      className={`w-full text-left bg-card border border-border rounded-[10px] px-2.5 py-2.5 transition-all duration-[120ms] cursor-pointer group focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none ${
         isOverlay
-          ? 'scale-[1.02] rotate-[1deg] border-primary/40 bg-card/92 shadow-[0_18px_40px_rgba(0,0,0,0.28)]'
+          ? 'shadow-[0_8px_24px_rgba(0,0,0,.35)] scale-[1.02] rotate-[1deg] border-primary/40'
           : isDragging
             ? 'opacity-30'
-            : 'hover:-translate-y-px hover:border-primary/24 hover:bg-card/80 hover:shadow-[0_16px_34px_rgba(0,0,0,0.2)]'
+            : 'hover:shadow-[0_4px_14px_rgba(0,0,0,.25)]'
       }`}
     >
       {/* Row 1: priority dot + title */}
       <div className="flex items-start gap-2">
         <span
-          className={`mt-1 h-2 w-2 shrink-0 rounded-full ${priorityTone.dotClass}`}
-          title={priorityLabel}
-          aria-label={`Priority: ${priorityLabel}`}
+          className={`mt-1 shrink-0 w-2 h-2 rounded-full ${PRIORITY_DOT[task.priority]}`}
+          title={PRIORITY_LABEL[task.priority]}
+          aria-label={`Priority: ${PRIORITY_LABEL[task.priority]}`}
           role="img"
         />
         <span className="text-[13px] font-semibold leading-[18px] text-foreground line-clamp-2 min-w-0">
@@ -135,7 +144,7 @@ function CardContent({
           {task.labels.slice(0, 3).map((label, idx) => (
             <span
               key={`${label}-${idx}`}
-              className="rounded-full border border-border/55 bg-background/50 px-2 py-0.5 text-[10px] font-medium leading-none text-muted-foreground"
+              className="text-[10px] font-medium leading-none bg-muted text-muted-foreground px-1.5 py-0.5 rounded-sm"
             >
               {label}
             </span>
@@ -148,7 +157,14 @@ function CardContent({
         </div>
       )}
 
-      {/* Row 3: meta line (assignee, run status, time) */}
+      {/* Row 4: Agent badges for orchestrated tasks */}
+      {task.labels.includes('orchestrated') && task.description && (
+        <div className="mt-1.5 ml-4">
+          <AgentBadges agents={[]} sequence="single" compact={true} />
+        </div>
+      )}
+
+      {/* Row 4: meta line (assignee, run status, time) */}
       <div className="flex items-center gap-2 mt-1.5 ml-4 text-[11px] text-muted-foreground">
         {task.assignee && (
           <span className="truncate max-w-[100px]">
@@ -159,7 +175,7 @@ function CardContent({
         {task.run && <RunBadge status={task.run.status} />}
 
         {task.run?.status === 'running' && task.run.startedAt && (
-          <span className="inline-flex items-center gap-0.5 text-[10px] text-info/80">
+          <span className="inline-flex items-center gap-0.5 text-[10px] text-cyan-400/80">
             <Clock size={9} />
             <ElapsedTime since={task.run.startedAt} />
           </span>

@@ -6,25 +6,21 @@
  */
 
 import { useRef, useState, useCallback, useEffect } from 'react';
-import { PanelLeftClose, RefreshCw, Pencil, Trash2, RotateCcw, X } from 'lucide-react';
+import { PanelLeftClose, PanelLeftOpen, RefreshCw, Pencil, Trash2, RotateCcw, X } from 'lucide-react';
 import { FileTreeNode } from './FileTreeNode';
 import { useFileTree } from './hooks/useFileTree';
-import { ConfirmDialog } from '../../components/ConfirmDialog';
 import type { TreeEntry } from './types';
 
 const MIN_WIDTH = 160;
 const MAX_WIDTH = 400;
 const DEFAULT_WIDTH = 220;
-/** Sentinel value for width state when collapsed. */
 const COLLAPSED_WIDTH = 0;
 
 const WIDTH_STORAGE_KEY = 'nerve-file-tree-width';
+const COLLAPSED_STORAGE_KEY = 'nerve-file-tree-collapsed';
 const MENU_VIEWPORT_PADDING = 8;
-const MENU_CURSOR_OFFSET = 6;
-const MENU_ROW_TOP_OFFSET = 2;
 const UNDO_TOAST_TTL_MS = 10_000;
 
-/** Load persisted file tree width from localStorage. */
 function loadWidth(): number {
   try {
     const v = localStorage.getItem(WIDTH_STORAGE_KEY);
@@ -32,19 +28,22 @@ function loadWidth(): number {
   } catch { return DEFAULT_WIDTH; }
 }
 
-/** Get parent directory path from a file path. */
+function loadCollapsed(): boolean {
+  try {
+    return localStorage.getItem(COLLAPSED_STORAGE_KEY) === 'true';
+  } catch { return false; }
+}
+
 function getParentDir(filePath: string): string {
   const idx = filePath.lastIndexOf('/');
   return idx === -1 ? '' : filePath.slice(0, idx);
 }
 
-/** Get basename (filename) from a file path. */
 function basename(filePath: string): string {
   const idx = filePath.lastIndexOf('/');
   return idx === -1 ? filePath : filePath.slice(idx + 1);
 }
 
-/** Check if a path points to a trash item. */
 function isTrashItemPath(filePath: string): boolean {
   return filePath.startsWith('.trash/') && filePath !== '.trash';
 }
@@ -55,12 +54,6 @@ interface FileTreePanelProps {
   onCloseOpenPaths?: (pathPrefix: string) => void;
   /** Called externally when a file changes (SSE) — refreshes affected directory */
   lastChangedPath?: string | null;
-  /** Layout hint retained for compatibility with existing callers. */
-  isCompactLayout?: boolean;
-  /** Callback to notify parent of collapse state changes */
-  onCollapseChange: (collapsed: boolean) => void;
-  /** External control of collapsed state */
-  collapsed: boolean;
 }
 
 interface FileOpResult {
@@ -80,13 +73,10 @@ export function FileTreePanel({
   onRemapOpenPaths,
   onCloseOpenPaths,
   lastChangedPath,
-  isCompactLayout = false,
-  onCollapseChange,
-  collapsed,
 }: FileTreePanelProps) {
   const {
     entries, loading, error, expandedPaths, selectedPath,
-    loadingPaths, workspaceInfo, toggleDirectory, selectFile, refresh, handleFileChange,
+    loadingPaths, toggleDirectory, selectFile, refresh, handleFileChange,
   } = useFileTree();
 
   // React to external file changes
@@ -100,16 +90,15 @@ export function FileTreePanel({
 
   const panelRef = useRef<HTMLDivElement>(null);
   const widthRef = useRef(loadWidth());
+  const collapsedRef = useRef(loadCollapsed());
   const draggingRef = useRef(false);
-  const [width, setWidth] = useState(() => {
-    return collapsed ? COLLAPSED_WIDTH : loadWidth();
-  });
 
-  // Handle external collapsed state changes (e.g., from mobile button)
-  useEffect(() => {
-    const targetWidth = collapsed ? COLLAPSED_WIDTH : widthRef.current;
-    setWidth(targetWidth);
-  }, [collapsed]);
+  // State-driven rendering (refs hold source of truth, state triggers re-render)
+  const [collapsed, setCollapsed] = useState(loadCollapsed);
+  const [width, setWidth] = useState(() => {
+    const c = loadCollapsed();
+    return c ? COLLAPSED_WIDTH : loadWidth();
+  });
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; entry: TreeEntry } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
@@ -123,9 +112,6 @@ export function FileTreePanel({
 
   const [toast, setToast] = useState<FileTreeToast | null>(null);
   const toastTimerRef = useRef<number | null>(null);
-
-  // Permanent delete confirmation state
-  const [deleteConfirmation, setDeleteConfirmation] = useState<{ entry: TreeEntry } | null>(null);
 
   const clearToastTimer = useCallback(() => {
     if (toastTimerRef.current !== null) {
@@ -176,26 +162,19 @@ export function FileTreePanel({
     };
   }, [contextMenu]);
 
-  // Clamp context menu within the file explorer bounds after render.
+  // Clamp context menu within viewport after render.
   useEffect(() => {
     if (!contextMenu || !contextMenuRef.current) return;
 
     const menuEl = contextMenuRef.current;
     const width = menuEl.offsetWidth;
     const height = menuEl.offsetHeight;
-    const panelRect = panelRef.current?.getBoundingClientRect();
 
-    const minX = panelRect ? panelRect.left + MENU_VIEWPORT_PADDING : MENU_VIEWPORT_PADDING;
-    const minY = panelRect ? panelRect.top + MENU_VIEWPORT_PADDING : MENU_VIEWPORT_PADDING;
-    const maxX = panelRect
-      ? Math.max(minX, panelRect.right - width - MENU_VIEWPORT_PADDING)
-      : Math.max(MENU_VIEWPORT_PADDING, window.innerWidth - width - MENU_VIEWPORT_PADDING);
-    const maxY = panelRect
-      ? Math.max(minY, panelRect.bottom - height - MENU_VIEWPORT_PADDING)
-      : Math.max(MENU_VIEWPORT_PADDING, window.innerHeight - height - MENU_VIEWPORT_PADDING);
+    const maxX = Math.max(MENU_VIEWPORT_PADDING, window.innerWidth - width - MENU_VIEWPORT_PADDING);
+    const maxY = Math.max(MENU_VIEWPORT_PADDING, window.innerHeight - height - MENU_VIEWPORT_PADDING);
 
-    const nextX = Math.min(Math.max(contextMenu.x, minX), maxX);
-    const nextY = Math.min(Math.max(contextMenu.y, minY), maxY);
+    const nextX = Math.min(Math.max(contextMenu.x, MENU_VIEWPORT_PADDING), maxX);
+    const nextY = Math.min(Math.max(contextMenu.y, MENU_VIEWPORT_PADDING), maxY);
 
     if (nextX !== contextMenu.x || nextY !== contextMenu.y) {
       setContextMenu((prev) => (prev ? { ...prev, x: nextX, y: nextY } : prev));
@@ -203,8 +182,11 @@ export function FileTreePanel({
   }, [contextMenu]);
 
   const toggleCollapsed = useCallback(() => {
-    onCollapseChange(!collapsed);
-  }, [collapsed, onCollapseChange]);
+    collapsedRef.current = !collapsedRef.current;
+    setCollapsed(collapsedRef.current);
+    setWidth(collapsedRef.current ? COLLAPSED_WIDTH : widthRef.current);
+    try { localStorage.setItem(COLLAPSED_STORAGE_KEY, String(collapsedRef.current)); } catch { /* ignore */ }
+  }, []);
 
   // Resize drag handling
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
@@ -273,19 +255,6 @@ export function FileTreePanel({
     try {
       // Dragging onto .trash behaves like explicit trash action.
       if (targetDirPath === '.trash' && !sourcePath.startsWith('.trash/')) {
-        // In custom workspaces, treat drag-to-trash as regular move since undo system doesn't exist
-        if (workspaceInfo?.isCustomWorkspace) {
-          const result = await postFileOp<FileOpResult>('/api/files/move', {
-            sourcePath,
-            targetDirPath: '.trash',
-          });
-          refresh();
-          onRemapOpenPaths?.(result.from, result.to);
-          selectFile(result.to);
-          showToast({ type: 'success', message: `Moved ${basename(result.from)} to .trash` }, 3000);
-          return;
-        }
-
         const result = await postFileOp<FileOpResult>('/api/files/trash', { path: sourcePath });
         onCloseOpenPaths?.(result.from);
         refresh();
@@ -313,7 +282,7 @@ export function FileTreePanel({
       const message = err instanceof Error ? err.message : 'Move failed';
       showToast({ type: 'error', message }, 4500);
     }
-  }, [onCloseOpenPaths, onRemapOpenPaths, postFileOp, refresh, selectFile, showToast, workspaceInfo]);
+  }, [onCloseOpenPaths, onRemapOpenPaths, postFileOp, refresh, selectFile, showToast]);
 
   const canDropToTarget = useCallback((source: TreeEntry, targetDirPath: string): boolean => {
     if (source.path === '.trash') return false;
@@ -337,10 +306,7 @@ export function FileTreePanel({
   const handleContextMenu = useCallback((entry: TreeEntry, event: React.MouseEvent) => {
     event.preventDefault();
     selectFile(entry.path);
-    const targetRect = event.currentTarget.getBoundingClientRect();
-    const nextX = Math.min(event.clientX + MENU_CURSOR_OFFSET, targetRect.right - MENU_VIEWPORT_PADDING);
-    const nextY = targetRect.top + MENU_ROW_TOP_OFFSET;
-    setContextMenu({ x: nextX, y: nextY, entry });
+    setContextMenu({ x: event.clientX, y: event.clientY, entry });
   }, [selectFile]);
 
   const startRename = useCallback((entry: TreeEntry) => {
@@ -395,14 +361,6 @@ export function FileTreePanel({
       return;
     }
 
-    // Show confirmation for permanent deletion
-    if (workspaceInfo?.isCustomWorkspace) {
-      setDeleteConfirmation({ entry });
-      setContextMenu(null);
-      return;
-    }
-
-    // Normal trash behavior (no confirmation)
     try {
       const result = await postFileOp<FileOpResult>('/api/files/trash', { path: entry.path });
       onCloseOpenPaths?.(result.from);
@@ -421,23 +379,6 @@ export function FileTreePanel({
       const message = err instanceof Error ? err.message : 'Move to Trash failed';
       showToast({ type: 'error', message }, 4500);
       setContextMenu(null);
-    }
-  }, [onCloseOpenPaths, postFileOp, refresh, showToast, workspaceInfo]);
-
-  const confirmPermanentDelete = useCallback(async (entry: TreeEntry) => {
-    try {
-      const result = await postFileOp<FileOpResult>('/api/files/trash', { path: entry.path });
-      onCloseOpenPaths?.(result.from);
-      refresh();
-      showToast(
-        { type: 'success', message: `Permanently deleted ${basename(result.from)}` },
-        3000
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Permanent deletion failed';
-      showToast({ type: 'error', message }, 4500);
-    } finally {
-      setDeleteConfirmation(null);
     }
   }, [onCloseOpenPaths, postFileOp, refresh, showToast]);
 
@@ -522,9 +463,19 @@ export function FileTreePanel({
     void runMove(source.path, '');
   }, [canDropToTarget, dragSource, runMove]);
 
-  // Collapsed state - hide the panel and let the chat header host the reopen control.
   if (collapsed) {
-    return null;
+    return (
+      <div className="shrink-0 border-r border-border bg-background flex flex-col items-center pt-2 w-9">
+        <button
+          onClick={toggleCollapsed}
+          className="p-1.5 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+          title="Open file explorer (Ctrl+B)"
+          aria-label="Open file explorer"
+        >
+          <PanelLeftOpen size={16} />
+        </button>
+      </div>
+    );
   }
 
   const menuEntry = contextMenu?.entry;
@@ -537,109 +488,105 @@ export function FileTreePanel({
   return (
     <div
       ref={panelRef}
-      className="relative flex h-full min-h-0 w-full shrink-0 flex-col overflow-visible"
-      style={isCompactLayout ? undefined : { width }}
+      className="shrink-0 border-r border-border bg-background flex flex-col h-full min-h-0 relative"
+      style={{ width }}
+      onContextMenu={(e) => {
+        // Right-click on empty panel area closes any open context menu.
+        if (e.target === e.currentTarget) {
+          e.preventDefault();
+          setContextMenu(null);
+        }
+      }}
     >
+      {/* Header */}
       <div
-        className="shell-panel flex h-full min-h-0 w-full shrink-0 flex-col overflow-hidden rounded-[28px]"
-        onContextMenu={(e) => {
-          // Right-click on empty panel area closes any open context menu.
-          if (e.target === e.currentTarget) {
-            e.preventDefault();
-            setContextMenu(null);
-          }
+        className={`flex items-center justify-between px-3 py-2 border-b border-border ${dropTargetPath === '.' ? 'bg-primary/15 ring-1 ring-primary/40' : ''}`}
+        onDragOver={handleRootDragOver}
+        onDragLeave={(e) => {
+          if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+          if (dropTargetPath === '.') setDropTargetPath(null);
         }}
+        onDrop={handleRootDrop}
       >
-        {/* Header */}
-        <div
-          className={`flex items-center justify-between border-b border-border/70 px-4 py-3 ${dropTargetPath === '.' ? 'bg-primary/12 ring-1 ring-inset ring-primary/35' : 'bg-gradient-to-r from-secondary/90 to-card/85'}`}
-          onDragOver={handleRootDragOver}
-          onDragLeave={(e) => {
-            if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-            if (dropTargetPath === '.') setDropTargetPath(null);
-          }}
-          onDrop={handleRootDrop}
-        >
-          <span className="text-[10px] font-mono font-semibold uppercase tracking-[0.26em] text-muted-foreground">
-            {workspaceInfo?.isCustomWorkspace ? workspaceInfo.rootPath : 'Workspace'}
-          </span>
-          <div className="flex items-center gap-2">
+        <span className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+          Workspace
+        </span>
+        <div className="flex items-center gap-0.5">
+          <button
+            onClick={refresh}
+            className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+            title="Refresh file tree"
+            aria-label="Refresh file tree"
+          >
+            <RefreshCw size={12} />
+          </button>
+          <button
+            onClick={toggleCollapsed}
+            className="p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
+            title="Close file explorer (Ctrl+B)"
+            aria-label="Close file explorer"
+          >
+            <PanelLeftClose size={12} />
+          </button>
+        </div>
+      </div>
+
+      {/* Tree content */}
+      <div className="flex-1 overflow-y-auto overflow-x-hidden py-1" role="tree" aria-label="File explorer">
+        {loading ? (
+          <div className="flex items-center gap-2 px-3 py-4 text-xs text-muted-foreground">
+            <RefreshCw className="animate-spin" size={12} />
+            Loading...
+          </div>
+        ) : error ? (
+          <div className="px-3 py-4 text-xs text-destructive">
+            {error}
             <button
               onClick={refresh}
-              className="shell-icon-button size-10 px-0"
-              title="Refresh file tree"
-              aria-label="Refresh file tree"
+              className="block mt-2 text-primary hover:underline"
             >
-              <RefreshCw size={16} />
-            </button>
-            <button
-              onClick={toggleCollapsed}
-              className="shell-icon-button size-10 px-0"
-              title="Close file explorer (Ctrl+B)"
-              aria-label="Close file explorer"
-            >
-              <PanelLeftClose size={16} />
+              Retry
             </button>
           </div>
-        </div>
-
-        {/* Tree content */}
-        <div className="flex-1 overflow-y-auto overflow-x-hidden py-1" role="tree" aria-label="File explorer">
-          {loading ? (
-            <div className="flex items-center gap-2 px-3 py-4 text-xs text-muted-foreground">
-              <RefreshCw className="animate-spin" size={12} />
-              Loading...
-            </div>
-          ) : error ? (
-            <div className="px-3 py-4 text-xs text-destructive">
-              {error}
-              <button
-                onClick={refresh}
-                className="block mt-2 text-primary hover:underline"
-              >
-                Retry
-              </button>
-            </div>
-          ) : entries.length === 0 ? (
-            <div className="px-3 py-4 text-xs text-muted-foreground">
-              Empty workspace
-            </div>
-          ) : (
-            entries.map((entry) => (
-              <FileTreeNode
-                key={entry.path}
-                entry={entry}
-                depth={0}
-                expandedPaths={expandedPaths}
-                selectedPath={selectedPath}
-                loadingPaths={loadingPaths}
-                onToggleDir={toggleDirectory}
-                onOpenFile={onOpenFile}
-                onSelect={selectFile}
-                onContextMenu={handleContextMenu}
-                dragSourcePath={dragSource?.path || null}
-                dropTargetPath={dropTargetPath}
-                onDragStart={handleDragStart}
-                onDragEnd={handleDragEnd}
-                onDragOverDirectory={handleDragOverDirectory}
-                onDragLeaveDirectory={handleDragLeaveDirectory}
-                onDropDirectory={handleDropDirectory}
-                renamingPath={renameTargetPath}
-                renameValue={renameValue}
-                onRenameChange={setRenameValue}
-                onRenameCommit={() => { void commitRename(); }}
-                onRenameCancel={cancelRename}
-              />
-            ))
-          )}
-        </div>
+        ) : entries.length === 0 ? (
+          <div className="px-3 py-4 text-xs text-muted-foreground">
+            Empty workspace
+          </div>
+        ) : (
+          entries.map((entry) => (
+            <FileTreeNode
+              key={entry.path}
+              entry={entry}
+              depth={0}
+              expandedPaths={expandedPaths}
+              selectedPath={selectedPath}
+              loadingPaths={loadingPaths}
+              onToggleDir={toggleDirectory}
+              onOpenFile={onOpenFile}
+              onSelect={selectFile}
+              onContextMenu={handleContextMenu}
+              dragSourcePath={dragSource?.path || null}
+              dropTargetPath={dropTargetPath}
+              onDragStart={handleDragStart}
+              onDragEnd={handleDragEnd}
+              onDragOverDirectory={handleDragOverDirectory}
+              onDragLeaveDirectory={handleDragLeaveDirectory}
+              onDropDirectory={handleDropDirectory}
+              renamingPath={renameTargetPath}
+              renameValue={renameValue}
+              onRenameChange={setRenameValue}
+              onRenameCommit={() => { void commitRename(); }}
+              onRenameCancel={cancelRename}
+            />
+          ))
+        )}
       </div>
 
       {/* Context menu */}
       {contextMenu && menuEntry && (
         <div
           ref={contextMenuRef}
-          className="shell-panel fixed z-50 min-w-[180px] rounded-2xl py-1.5"
+          className="fixed z-50 min-w-[160px] bg-card border border-border shadow-lg rounded-md py-1"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           {showRestore && (
@@ -671,7 +618,7 @@ export function FileTreePanel({
               onClick={() => { void moveToTrash(menuEntry); }}
             >
               <Trash2 size={12} />
-              {workspaceInfo?.isCustomWorkspace ? 'Permanently Delete' : 'Move to Trash'}
+              Move to Trash
             </button>
           )}
 
@@ -685,7 +632,7 @@ export function FileTreePanel({
 
       {/* Toast */}
       {toast && (
-        <div className="shell-panel fixed bottom-4 left-2 right-2 z-[70] flex w-auto min-w-0 max-w-[min(92vw,680px)] items-center gap-3 rounded-2xl px-4 py-3 text-xs sm:left-4 sm:right-auto sm:min-w-[320px]">
+        <div className="fixed bottom-4 left-4 z-[70] w-fit min-w-[320px] max-w-[min(92vw,680px)] px-4 py-2.5 rounded-md border text-xs shadow-lg bg-card flex items-center gap-3">
           <span className={`flex-1 ${toast.type === 'error' ? 'text-destructive' : 'text-foreground'}`}>
             {toast.message}
           </span>
@@ -708,32 +655,14 @@ export function FileTreePanel({
       )}
 
       {/* Resize handle */}
-      {!isCompactLayout && (
-        <div
-          className="absolute top-0 -right-3 z-20 flex h-full w-3 cursor-col-resize items-stretch justify-center"
-          onMouseDown={handleMouseDown}
-          onDoubleClick={handleDoubleClickResize}
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize file explorer"
-        >
-          <div className="pointer-events-none my-3 w-px rounded-full bg-border transition-colors hover:bg-primary/55" />
-        </div>
-      )}
-
-      {/* Permanent delete confirmation dialog */}
-      {deleteConfirmation && (
-        <ConfirmDialog
-          open={true}
-          title="Permanently Delete"
-          message={`Are you sure you want to permanently delete "${deleteConfirmation.entry.name}"? This action cannot be undone.`}
-          confirmLabel="Permanently Delete"
-          cancelLabel="Cancel"
-          variant="danger"
-          onConfirm={() => confirmPermanentDelete(deleteConfirmation.entry)}
-          onCancel={() => setDeleteConfirmation(null)}
-        />
-      )}
+      <div
+        className="absolute top-0 right-0 w-1 h-full cursor-col-resize hover:bg-primary/50 active:bg-primary/50 transition-colors z-10"
+        onMouseDown={handleMouseDown}
+        onDoubleClick={handleDoubleClickResize}
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize file explorer"
+      />
     </div>
   );
 }

@@ -636,3 +636,101 @@ app.get('/api/orchestrator/task/:id/review', rateLimitGeneral, async (c) => {
   // For now, return placeholder
   return c.json({ success: true, message: 'Review endpoint ready' });
 });
+
+/**
+ * POST /api/orchestrator/task/:id/fix
+ * Fix PR issues and re-run review
+ */
+app.post('/api/orchestrator/task/:id/fix', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const store = getKanbanStore();
+    const task = await store.getTask(taskId);
+    
+    if (!task || !task.pr) {
+      return c.json({ error: 'Task or PR not found' }, 404);
+    }
+    
+    // Get latest review report (would be stored in task metadata)
+    const report = (task as any).lastReviewReport;
+    if (!report) {
+      return c.json({ error: 'No review report found. Run review first.' }, 400);
+    }
+    
+    // Detect project type
+    const { detectProject } = await import('../lib/project-registry.js');
+    const project = detectProject(task.description || task.title, task.labels || []);
+    
+    // Fix issues
+    const { fixPRIssues } = await import('../services/pr-review.js');
+    const fixResult = await fixPRIssues(
+      taskId,
+      task.pr.number,
+      report,
+      project?.type
+    );
+    
+    if (!fixResult.success) {
+      return c.json({ error: fixResult.message }, 500);
+    }
+    
+    // Task stays in in-progress while fixing
+    return c.json({
+      success: true,
+      message: fixResult.message,
+      commits: fixResult.commits,
+      status: 'fixing',
+    });
+  } catch (error) {
+    console.error('Failed to fix PR issues:', error);
+    return c.json({ error: 'Failed to fix PR issues' }, 500);
+  }
+});
+
+/**
+ * POST /api/orchestrator/task/:id/rerun-review
+ * Re-run PR review after fixes
+ */
+app.post('/api/orchestrator/task/:id/rerun-review', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const store = getKanbanStore();
+    const task = await store.getTask(taskId);
+    
+    if (!task || !task.pr) {
+      return c.json({ error: 'Task or PR not found' }, 404);
+    }
+    
+    // Detect project type
+    const { detectProject } = await import('../lib/project-registry.js');
+    const project = detectProject(task.description || task.title, task.labels || []);
+    
+    // Re-run review
+    const { rerunPRReview } = await import('../services/pr-review.js');
+    const report = await rerunPRReview(
+      taskId,
+      task.pr.number,
+      project?.type
+    );
+    
+    // Save report to task metadata
+    const updatedTask = await store.updateTask(taskId, task.version, {
+      pr: {
+        ...task.pr,
+        reviewComments: report.criticalIssues + report.highIssues,
+      },
+    } as any);
+    
+    // If passed, move to review; otherwise stay in in-progress
+    const newStatus = report.passed ? 'review' : 'in-progress';
+    
+    return c.json({
+      success: true,
+      report,
+      taskStatus: newStatus,
+    });
+  } catch (error) {
+    console.error('Failed to re-run review:', error);
+    return c.json({ error: 'Failed to re-run review' }, 500);
+  }
+});

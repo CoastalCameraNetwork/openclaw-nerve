@@ -58,7 +58,7 @@ Create recurring jobs and one-shot reminders. Every scheduled run shows up as it
 |---|---|
 | **Voice I/O** | Push-to-talk + wake word, live transcription preview, language-aware stop/cancel phrases, local Whisper model picker, TTS providers (Edge/OpenAI/Replicate) |
 | **Streaming chat** | Markdown, syntax highlighting, diff views, image paste, file previews. All rendering as it streams |
-| **File browser** | Browse your workspace, rename, move, trash, and restore files. Open files in tabs. Support for custom workspace roots via `FILE_BROWSER_ROOT` |
+| **File browser** | Browse your workspace, rename, move, trash, and restore files. Open files in tabs |
 | **Built-in editor** | CodeMirror editor with syntax highlighting, conflict-safe saves, and automatic lock protection during concurrent agent edits |
 | **Multi-session** | Session tree with sub-agents, per-session model overrides, unread indicators |
 | **Kanban board** | Drag-and-drop task management with agent execution, review workflow, and proposal inbox |
@@ -140,7 +140,7 @@ Nerve binds to `127.0.0.1` (localhost) by default — only you can access it. Wh
 - **Session cookies** — `HttpOnly`, `SameSite=Strict`, HMAC-SHA256 signed
 - **Password storage** — scrypt with 32-byte salt
 - **WebSocket auth** — cookie verified on upgrade
-- **Gateway token injection** — Automatically injected server-side for trusted connections
+- **Gateway token fallback** — works as a password with zero config
 
 See [Security](docs/SECURITY.md) for the full threat model.
 

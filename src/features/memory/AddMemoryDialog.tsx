@@ -75,24 +75,20 @@ export function AddMemoryDialog({ open, onOpenChange, onAdd, sections = [], isLo
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="max-w-lg overflow-visible">
+      <DialogContent className="bg-card border-border max-w-md">
         <DialogHeader>
-          <div className="cockpit-kicker">
-            <span className="text-primary">◆</span>
-            Memory Capture
-          </div>
-          <DialogTitle className="text-[1.35rem] font-semibold tracking-[-0.03em] text-foreground">
-            Add memory
+          <DialogTitle className="text-primary font-mono text-sm tracking-wider uppercase">
+            Add Memory
           </DialogTitle>
-          <DialogDescription className="text-sm text-muted-foreground">
-            Store a durable note in `MEMORY.md`, either inside an existing section or under a new heading.
+          <DialogDescription className="text-muted-foreground text-xs">
+            Store a new memory in MEMORY.md under a section heading.
           </DialogDescription>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Section selector (combo box) */}
           <div className="space-y-2">
-            <label className="cockpit-field-label">
+            <label className="text-[11px] text-muted-foreground uppercase tracking-wider">
               Section
             </label>
             <div className="relative" ref={dropdownRef}>
@@ -107,7 +103,7 @@ export function AddMemoryDialog({ open, onOpenChange, onAdd, sections = [], isLo
                   }}
                   onFocus={() => setSectionDropdownOpen(true)}
                   placeholder="General"
-                  className="cockpit-input pr-11"
+                  className="w-full bg-background border border-border px-3 py-2 pr-8 text-[13px] font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50 transition-colors"
                   disabled={submitting}
                   autoComplete="off"
                   role="combobox"
@@ -120,7 +116,7 @@ export function AddMemoryDialog({ open, onOpenChange, onAdd, sections = [], isLo
                     setSectionDropdownOpen(!sectionDropdownOpen);
                     inputRef.current?.focus();
                   }}
-                  className="cockpit-toolbar-button absolute right-2 top-1/2 min-h-8 -translate-y-1/2 px-2.5"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                   tabIndex={-1}
                 >
                   <ChevronDown size={14} className={`transition-transform ${sectionDropdownOpen ? 'rotate-180' : ''}`} />
@@ -129,7 +125,7 @@ export function AddMemoryDialog({ open, onOpenChange, onAdd, sections = [], isLo
 
               {/* Dropdown list */}
               {sectionDropdownOpen && filteredSections.length > 0 && (
-                <div className="absolute z-50 mt-2 max-h-48 w-full overflow-y-auto rounded-2xl border border-border/80 bg-card/98 p-1 shadow-[0_20px_48px_rgba(0,0,0,0.28)] backdrop-blur-xl">
+                <div className="absolute z-50 w-full mt-1 bg-card border border-border shadow-lg max-h-40 overflow-y-auto">
                   {filteredSections.map((s) => (
                     <button
                       key={s}
@@ -138,39 +134,38 @@ export function AddMemoryDialog({ open, onOpenChange, onAdd, sections = [], isLo
                         setSection(s);
                         setSectionDropdownOpen(false);
                       }}
-                      className={`w-full rounded-xl px-3 py-2 text-left text-sm transition-colors ${
-                        section === s ? 'bg-primary/12 text-primary' : 'text-foreground hover:bg-primary/8'
-                      }`}
+                      className={`
+                        w-full text-left px-3 py-1.5 text-[12px] font-mono hover:bg-primary/10 hover:text-primary transition-colors
+                        ${section === s ? 'bg-primary/10 text-primary' : 'text-foreground'}
+                      `}
                     >
                       {s}
                     </button>
                   ))}
                   {section.trim() && !sections.some((s) => s.toLowerCase() === section.trim().toLowerCase()) && (
-                    <div className="mt-1 rounded-xl border border-border/70 bg-background/60 px-3 py-2 text-[11px] text-muted-foreground">
-                      New section: <span className="font-medium text-primary">{section.trim()}</span>
+                    <div className="px-3 py-1.5 text-[10px] text-muted-foreground border-t border-border">
+                      New section: <span className="text-primary font-medium">{section.trim()}</span>
                     </div>
                   )}
                 </div>
               )}
             </div>
-            <p className="cockpit-field-hint">Leave this as `General` or type a new section name to branch memory more cleanly.</p>
           </div>
 
           {/* Text input */}
           <div className="space-y-2">
-            <label className="cockpit-field-label">
+            <label className="text-[11px] text-muted-foreground uppercase tracking-wider">
               Memory Text
             </label>
             <textarea
               value={text}
               onChange={(e) => setText(e.target.value)}
               placeholder="Enter the memory to store..."
-              className="cockpit-textarea min-h-[132px]"
+              className="w-full bg-background border border-border px-3 py-2 text-[13px] font-mono text-foreground placeholder:text-muted-foreground/50 resize-none focus:outline-none focus:border-primary/50 transition-colors"
               rows={3}
               autoFocus
               disabled={submitting}
             />
-            <p className="cockpit-field-hint">Write the durable fact or preference you want the agent to recall later.</p>
           </div>
 
           <DialogFooter className="gap-2">
@@ -179,14 +174,14 @@ export function AddMemoryDialog({ open, onOpenChange, onAdd, sections = [], isLo
               variant="outline"
               onClick={handleClose}
               disabled={submitting}
-              className="text-xs"
+              className="font-mono text-xs"
             >
               Cancel
             </Button>
             <Button
               type="submit"
               disabled={!text.trim() || submitting || isLoading}
-              className="min-w-[124px] text-xs"
+              className="font-mono text-xs bg-primary text-primary-foreground hover:bg-primary/90"
             >
               {submitting ? 'Storing...' : 'Store Memory'}
             </Button>

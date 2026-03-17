@@ -20,12 +20,6 @@ import { useSessionContext } from './SessionContext';
 import { useSettings } from './SettingsContext';
 import { getSessionKey, type GatewayEvent } from '@/types';
 import {
-  getRootAgentSessionKey,
-  isRootChildSession,
-  isSubagentSessionKey,
-  isTopLevelAgentSessionKey,
-} from '@/features/sessions/sessionKeys';
-import {
   loadChatHistory,
   processChatMessages,
   buildUserMessage,
@@ -169,6 +163,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     if (connectionState === 'connected') {
       if (prevConnection === 'reconnecting' && recoveryHook.wasGeneratingOnDisconnect()) {
         recoveryHook.triggerRecovery('reconnect');
+      } else {
+        msgHook.loadHistory(currentSession);
       }
       recoveryHook.clearDisconnectState();
     }
@@ -188,13 +184,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     recoveryHook.captureDisconnectState,
   ]);
 
-  useEffect(() => {
-    if (connectionState !== 'connected' || !currentSession) return;
-    msgHook.loadHistory(currentSession);
-  }, [connectionState, currentSession, msgHook.loadHistory]);
-
   // ─── Periodic history poll for sub-agent sessions ─────────────────────────
-  const isSubagentSession = currentSession ? isSubagentSessionKey(currentSession) : false;
+  const isSubagentSession = currentSession?.includes(':subagent:') ?? false;
   const subagentSessionState = isSubagentSession
     ? sessions.find(s => getSessionKey(s) === currentSession)?.state?.toLowerCase()
     : undefined;
@@ -267,10 +258,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const currentSk = currentSessionRef.current;
       if (classified.sessionKey !== currentSk) {
         if (
-          isTopLevelAgentSessionKey(currentSk) &&
-          classified.sessionKey &&
-          isSubagentSessionKey(classified.sessionKey) &&
-          isRootChildSession(classified.sessionKey, getRootAgentSessionKey(currentSk) || currentSk) &&
+          classified.sessionKey?.startsWith(currentSk + ':subagent:') &&
           (classified.type === 'chat_final' || classified.type === 'lifecycle_end')
         ) {
           recoveryHook.triggerRecovery('subagent-complete');
