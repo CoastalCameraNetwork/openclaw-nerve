@@ -41,6 +41,7 @@ const WorkspacePanel = lazy(() => import('@/features/workspace/WorkspacePanel').
 
 // Lazy-loaded view modes
 const KanbanPanel = lazy(() => import('@/features/kanban/KanbanPanel').then(m => ({ default: m.KanbanPanel })));
+const OrchestratorDashboard = lazy(() => import('@/features/orchestrator/OrchestratorDashboard').then(m => ({ default: m.OrchestratorDashboard })));
 
 interface AppProps {
   onLogout?: () => void;
@@ -222,6 +223,16 @@ export default function App({ onLogout }: AppProps) {
     setPendingTaskId(taskId);
     setViewMode('kanban');
   }, [setViewMode]);
+
+  // Listen for custom view mode switch events (e.g., from KanbanPanel's "Dashboard" button)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<ViewMode>;
+      setViewModeRaw(ce.detail);
+    };
+    window.addEventListener('nerve:setViewMode', handler);
+    return () => window.removeEventListener('nerve:setViewMode', handler);
+  }, []);
 
   // Build command list with stable references
   const openSettings = useCallback(() => setSettingsOpen(true), []);
@@ -657,12 +668,19 @@ export default function App({ onLogout }: AppProps) {
             </Suspense>
           </div>
         )}
+        {viewMode === 'orchestrator' && (
+          <div className="shell-panel boot-panel flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden rounded-[28px] overflow-auto">
+            <Suspense fallback={<div className="flex-1 flex items-center justify-center text-muted-foreground text-xs bg-background">Loading dashboard…</div>}>
+              <OrchestratorDashboard />
+            </Suspense>
+          </div>
+        )}
         {isCompactLayout ? (
-          <div className={`shell-panel flex-1 min-w-0 min-h-0 overflow-hidden rounded-[28px] boot-panel${viewMode === 'kanban' ? ' hidden' : ''}`}>
+          <div className={`shell-panel flex-1 min-w-0 min-h-0 overflow-hidden rounded-[28px] boot-panel${viewMode !== 'chat' ? ' hidden' : ''}`}>
             {chatContent}
           </div>
         ) : (
-          <div style={{ display: viewMode === 'kanban' ? 'none' : 'contents' }}>
+          <div style={{ display: viewMode !== 'chat' ? 'none' : 'contents' }}>
             <ResizablePanels
               leftPercent={panelRatio}
               onResize={setPanelRatio}
