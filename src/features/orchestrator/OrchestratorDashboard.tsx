@@ -10,9 +10,13 @@
  * - Active sessions overview
  */
 
-import { memo, useEffect, useState, useCallback } from 'react';
+import { memo, useEffect, useState, useCallback, useRef } from 'react';
 import { Cpu, Clock, CheckCircle2, Loader2, Users, Activity, DollarSign, TrendingUp, Calendar } from 'lucide-react';
-import { useAgents } from './useOrchestrator';
+import { useAgents, useOrchestratorStats } from './useOrchestrator';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts';
+import { TaskDetailPanel } from './TaskDetailPanel';
+import { DollarSign as DollarSignIcon } from 'lucide-react';
+import { useServerEvents } from '../../hooks/useServerEvents';
 
 export type TimeRangeOption = 'today-local' | '24h-rolling' | '48h-rolling' | '72h-rolling' | '7d-rolling' | '14d-rolling' | '30d-rolling' | 'today-utc';
 
@@ -41,7 +45,7 @@ interface DashboardSession {
   status: 'running' | 'completed' | 'failed';
 }
 
-const AGENT_AVATARS: Record<string, { emoji: string; color: string; role: string }> = {
+export const AGENT_AVATARS: Record<string, { emoji: string; color: string; role: string }> = {
   'k8s-agent': { emoji: '🔷', color: '#3b82f6', role: 'K8s Engineer' },
   'mgmt-agent': { emoji: '🎛️', color: '#8b5cf6', role: 'Platform Dev' },
   'wordpress-agent': { emoji: '🌐', color: '#f97316', role: 'WP Developer' },
@@ -111,13 +115,13 @@ function AgentAvatar({
 /**
  * OfficeDesk - Represents a task with agents working at a "desk"
  */
-function OfficeDesk({ session }: { session: DashboardSession }) {
+function OfficeDesk({ session, onTaskClick }: { session: DashboardSession; onTaskClick: (taskId: string) => void }) {
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
-  
+
   // Close bubble when clicking outside
   useEffect(() => {
     if (!expandedAgent) return;
-    
+
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       // Close if click is not on an agent element
@@ -125,13 +129,16 @@ function OfficeDesk({ session }: { session: DashboardSession }) {
         setExpandedAgent(null);
       }
     };
-    
+
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
   }, [expandedAgent]);
-  
+
   return (
-    <div className="relative p-4 rounded-xl border bg-card hover:shadow-lg transition-all duration-300 group">
+    <div
+      className="relative p-4 rounded-xl border bg-card hover:shadow-lg transition-all duration-300 group cursor-pointer"
+      onClick={() => onTaskClick(session.taskId)}
+    >
       {/* Desk surface gradient */}
       <div className="absolute inset-0 rounded-xl bg-gradient-to-br from-primary/5 via-transparent to-transparent pointer-events-none" />
       
@@ -307,13 +314,12 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
   const [sessions, setSessions] = useState<DashboardSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [timeRange, setTimeRange] = useState<TimeRangeOption>('today-local');
-  const [stats, setStats] = useState({
-    activeAgents: 0,
-    completedInPeriod: 0,
-    totalTasks: 0,
-    avgDuration: '0m',
-  });
-  
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const sessionsRef = useRef<typeof sessions>(sessions);
+
+  // Use the new stats hook
+  const { stats: orchestratorStats, loading: statsLoading } = useOrchestratorStats(timeRange);
+
   const [usage, setUsage] = useState({
     totalInput: 0,
     totalOutput: 0,
@@ -405,11 +411,11 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
       const tasksResponse = await fetch('/api/kanban/tasks?limit=200', {
         credentials: 'include',
       });
-      
+
       if (tasksResponse.ok) {
         const tasksData = await tasksResponse.json();
         const allTasks = tasksData.items || tasksData.tasks || [];
-        
+
         // Get active sessions - tasks with agent labels that are not done/cancelled
         // Shows tasks that are in-progress, review, or have active runs
         const orchestratedTasks = allTasks.filter((t: any) => {
@@ -417,69 +423,36 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
           const isActive = !['done', 'cancelled'].includes(t.status);
           return hasAgents && isActive;
         });
-        
-        // Get time window for stats
-        const timeWindow = getTimeWindow();
-        
-        // Calculate completed tasks in time window
-        const completedTasks = allTasks.filter((t: any) => 
-          t.run && 
-          (t.run.status === 'done' || t.run.status === 'completed') &&
-          t.run.endedAt && 
-          t.run.endedAt >= timeWindow.start
-        );
-        
-        // Calculate average duration from completed tasks
-        let avgDurationMs = 0;
-        if (completedTasks.length > 0) {
-          const durations = completedTasks
-            .filter((t: any) => t.run.startedAt && t.run.endedAt)
-            .map((t: any) => t.run.endedAt - t.run.startedAt);
-          avgDurationMs = durations.length > 0 
-            ? durations.reduce((a: number, b: number) => a + b, 0) / durations.length 
-            : 0;
-        }
-        
-        function formatDuration(ms: number): string {
-          const seconds = Math.floor(ms / 1000);
-          if (seconds < 60) return `${seconds}s`;
-          const minutes = Math.floor(seconds / 60);
-          const remainingSeconds = seconds % 60;
-          if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
-          const hours = Math.floor(minutes / 60);
-          const remainingMinutes = minutes % 60;
-          return `${hours}h ${remainingMinutes}m`;
-        }
-        
+
         // Fetch actual subagent sessions from gateway
         const sessionsResponse = await fetch('/api/orchestrator/sessions', {
           credentials: 'include',
         });
-        
+
         let subagentSessions: any[] = [];
         if (sessionsResponse.ok) {
           const sessionsData = await sessionsResponse.json();
           subagentSessions = sessionsData.sessions || [];
         }
-        
+
         // Transform into dashboard format with real agent data
         const dashboardSessions: DashboardSession[] = orchestratedTasks.map((task: any) => {
           // Extract agent names from labels (format: "agent:agent-name")
           const agentLabels = task.labels.filter((l: string) => l.startsWith('agent:'));
           const agentNames: string[] = agentLabels.map((l: string) => l.replace('agent:', ''));
-          
+
           // Match with actual subagent sessions
           const agents = agentNames.map(agentName => {
-            const session = subagentSessions.find((s: any) => 
+            const session = subagentSessions.find((s: any) =>
               s.label && s.label.includes(agentName)
             );
-            
+
             // Determine status based on session status (Gateway is source of truth)
             let status: 'pending' | 'running' | 'completed' | 'failed' = 'pending';
             if (session) {
               // Gateway session exists - use its status
-              status = session.status === 'running' ? 'running' : 
-                       session.status === 'done' ? 'completed' : 
+              status = session.status === 'running' ? 'running' :
+                       session.status === 'done' ? 'completed' :
                        session.status === 'error' ? 'failed' : 'pending';
             } else if (task.run?.status === 'done') {
               status = 'completed';
@@ -491,7 +464,7 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
               // Task is in-progress but no active session - agents finished
               status = 'completed';
             }
-            
+
             return {
               name: agentName,
               status,
@@ -500,9 +473,9 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
               error: session?.error || task.run?.error,
             };
           });
-          
+
           const startedAt = task.run?.startedAt || Date.now();
-          
+
           return {
             taskId: task.id,
             taskTitle: task.title,
@@ -516,23 +489,15 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
             status: 'running' as const,
           };
         });
-        
+
         setSessions(dashboardSessions);
-        
-        // Update stats with real data
-        setStats({
-          activeAgents: dashboardSessions.reduce((sum, s) => sum + s.agents.filter(a => a.status === 'running').length, 0),
-          completedInPeriod: completedTasks.length,
-          totalTasks: dashboardSessions.length,
-          avgDuration: avgDurationMs > 0 ? formatDuration(avgDurationMs) : '—',
-        });
       }
     } catch (err) {
       console.error('Failed to fetch sessions:', err);
     } finally {
       setLoading(false);
     }
-  }, [getTimeWindow]);
+  }, []);
 
   useEffect(() => {
     fetchSessions();
@@ -545,6 +510,22 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
     };
   }, [fetchSessions, fetchUsage]);
 
+  // Keep sessions ref updated for SSE callback
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
+  // Subscribe to SSE events for auto-refresh on task completion
+  useServerEvents(
+    useCallback((event) => {
+      if (event.event === 'orchestrator.task_complete') {
+        // Task completed - refresh sessions
+        fetchSessions();
+      }
+    }, [fetchSessions]),
+    { enabled: true }
+  );
+
   if (loading) {
     return (
       <div className="flex items-center justify-center p-8">
@@ -556,6 +537,14 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
 
   return (
     <div className="space-y-6 p-6">
+      {/* Task Detail Panel */}
+      {selectedTaskId && (
+        <TaskDetailPanel
+          taskId={selectedTaskId}
+          onClose={() => setSelectedTaskId(null)}
+        />
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -591,25 +580,25 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
         <StatCard
           icon={Users}
           label="Active Agents"
-          value={stats.activeAgents}
+          value={orchestratorStats?.activeAgents ?? 0}
           color="#06b6d4"
         />
         <StatCard
           icon={CheckCircle2}
           label={`Completed (${getTimeWindow().label})`}
-          value={stats.completedInPeriod}
+          value={orchestratorStats?.completedInPeriod ?? 0}
           color="#22c55e"
         />
         <StatCard
           icon={Activity}
           label="Active Tasks"
-          value={stats.totalTasks}
+          value={orchestratorStats?.inProgress ?? 0}
           color="#8b5cf6"
         />
         <StatCard
           icon={Clock}
-          label="Avg Duration"
-          value={stats.avgDuration}
+          label="In Review"
+          value={orchestratorStats?.inReview ?? 0}
           color="#f59e0b"
         />
       </div>
@@ -638,8 +627,8 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
               <span className="font-mono font-semibold">{usage.loading ? '...' : (usage.totalInput + usage.totalOutput).toLocaleString()}</span>
             </div>
             <div className="mt-2 h-2 bg-muted rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-gradient-to-r from-green-400 to-cyan-400" 
+              <div
+                className="h-full bg-gradient-to-r from-green-400 to-cyan-400"
                 style={{ width: usage.loading ? '0%' : '100%' }}
               />
             </div>
@@ -675,6 +664,99 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
         </div>
       </div>
 
+      {/* Activity Chart */}
+      <div className="p-4 rounded-xl border bg-card">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-semibold flex items-center gap-2">
+            <Activity size={16} className="text-cyan-400" />
+            Task Activity ({getTimeWindow().label})
+          </h3>
+          {statsLoading && <Loader2 size={14} className="animate-spin text-muted-foreground" />}
+        </div>
+        <div className="h-64">
+          {orchestratorStats?.buckets && orchestratorStats.buckets.length > 0 ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={orchestratorStats.buckets}>
+                <XAxis
+                  dataKey="time"
+                  tick={{ fontSize: 12 }}
+                  interval="preserveStartEnd"
+                />
+                <YAxis tick={{ fontSize: 12 }} />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: 'hsl(var(--popover))',
+                    border: '1px solid hsl(var(--border))',
+                    borderRadius: '8px',
+                  }}
+                  labelStyle={{ color: 'hsl(var(--foreground))' }}
+                />
+                <Legend />
+                <Bar name="Created" dataKey="created" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+                <Bar name="Completed" dataKey="completed" fill="#22c55e" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+              No activity data available
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Per-Agent Cost Breakdown */}
+      <div className="p-4 rounded-xl border bg-card">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-semibold flex items-center gap-2">
+            <DollarSignIcon size={16} className="text-amber-400" />
+            Per-Agent Cost Breakdown ({getTimeWindow().label})
+          </h3>
+          {statsLoading && <Loader2 size={14} className="animate-spin text-muted-foreground" />}
+        </div>
+        <div className="h-48">
+          {orchestratorStats?.agentCosts && orchestratorStats.agentCosts.length > 0 ? (
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={orchestratorStats.agentCosts}>
+                <XAxis
+                  dataKey="agent"
+                  tick={{ fontSize: 10 }}
+                  angle={-45}
+                  textAnchor="end"
+                  height={60}
+                  interval="preserveStartEnd"
+                />
+                <YAxis
+                  tick={{ fontSize: 10 }}
+                  tickFormatter={(value) => `$${value.toFixed(2)}`}
+                />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: 'hsl(var(--popover))',
+                    border: '1px solid hsl(var(--border))',
+                    borderRadius: '8px',
+                  }}
+                  labelStyle={{ color: 'hsl(var(--foreground))' }}
+                  formatter={(value: number | undefined, name: string | undefined) => {
+                    const v = value || 0;
+                    const n = name || '';
+                    if (n === 'cost') return [`$${v.toFixed(4)}`, 'Cost'];
+                    if (n === 'inputTokens') return [v.toLocaleString(), 'Input Tokens'];
+                    if (n === 'outputTokens') return [v.toLocaleString(), 'Output Tokens'];
+                    return [String(v), n];
+                  }}
+                />
+                <Legend />
+                <Bar name="cost" dataKey="cost" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+              No agent cost data available
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* Office Scene */}
       <div className="rounded-xl border bg-card/50 p-6">
         <h2 className="text-sm font-semibold mb-4 flex items-center gap-2">
@@ -702,7 +784,11 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {sessions.map((session) => (
-              <OfficeDesk key={session.taskId} session={session} />
+              <OfficeDesk
+                key={session.taskId}
+                session={session}
+                onTaskClick={setSelectedTaskId}
+              />
             ))}
           </div>
         )}

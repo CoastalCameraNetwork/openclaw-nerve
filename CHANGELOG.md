@@ -6,6 +6,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+**Orchestrator Sprints 1-4 Complete** — Full multi-agent coordination with reliability features and intelligent model routing:
+
+- **Sprint 1: Reliability Foundation** (6 tasks)
+  - Hardcoded path resolution via `projectLocalPath` parameter
+  - Optimistic commit counting with `commits: 0` fallback
+  - Structured error handling with `ErrorCode` enum
+  - Registry test coverage (79 passing tests)
+  - Gate enforcement via `buildGateInstructions()`
+  - Recovery tracking with `bumpGeneration()` counter
+
+- **Sprint 2: Orchestrator Core** (4 tasks)
+  - Webhook endpoint `/api/orchestrator/webhook/session-complete` for session capture
+  - Session watcher polling Gateway every 5 seconds
+  - Structured agent handoff with `AgentHandoff` interface and `parseAgentHandoff()`
+  - Reliable output capture with token usage tracking
+  - Proposal parsing via `createProposalsFromFindings()`
+  - Real-time SSE broadcasting via `orchestrator.task_complete` events
+
+- **Sprint 3: Dashboard UI** (4 tasks)
+  - Time-range selector with time-bucketed charts (recharts)
+  - TaskDetailPanel component with execution history
+  - Per-agent token breakdown and cost tracking
+  - Cost budgets with `maxCostUSD` parameter
+
+- **Sprint 4: Intelligent Model Routing** (4 tasks)
+  - Dynamic model selection based on task complexity (`analyzeComplexity()`)
+  - Per-routing-rule model overrides in `agent-registry.ts`
+  - Complexity factors: description length, keywords, multi-agent requirements, domain type
+  - Model priority: rule override → complexity analysis → agent default
+  - `/api/orchestrator/route` endpoint returns recommended model
+  - Model threading through `executeTask()` → `spawnAgentSession()`
+  - Integration test coverage for model routing (24 tests passing)
+
+### Changed
+
+- `OrchestratorDashboard` now subscribes to SSE events for real-time auto-refresh on task completion
+- Documentation synced: `skills/orchestrator/SKILL.md` now covers all implemented endpoints and features
+- Routing rules now include `model_override` field for explicit model assignment
+- Security audits, database migrations, and multi-agent deployments default to `qwen3.5-plus`
+- Simple API calls (CDN purge, WordPress plugins) default to `glm-4.5` for cost efficiency
+
 ---
 
 ## [1.4.8] — 2026-03-04

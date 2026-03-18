@@ -1,15 +1,16 @@
 /**
  * useServerEvents - React hook for Server-Sent Events (SSE).
- * 
+ *
  * Connects to /api/events and receives real-time updates from the server.
  * Automatically reconnects on disconnect with exponential backoff.
- * 
+ *
  * Event types:
  * - connected: Initial connection confirmation
  * - ping: Keep-alive (every 30s)
  * - memory.changed: Memory file was modified
  * - tokens.updated: Token usage changed
  * - status.changed: Gateway status changed
+ * - orchestrator.task_complete: Orchestrator task/session completed
  */
 
 import { useEffect, useRef, useCallback, useState } from 'react';
@@ -113,6 +114,7 @@ export function useServerEvents(
     es.addEventListener('tokens.updated', handleEvent);
     es.addEventListener('status.changed', handleEvent);
     es.addEventListener('file.changed', handleEvent);
+    es.addEventListener('orchestrator.task_complete', handleEvent);
 
     // Also handle generic message events (fallback)
     es.onmessage = handleEvent;

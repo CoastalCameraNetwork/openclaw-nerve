@@ -74,6 +74,7 @@ export interface CreateTaskParams {
   priority?: 'critical' | 'high' | 'normal' | 'low';
   status?: 'backlog' | 'todo';
   execute_immediately?: boolean;
+  maxCostUSD?: number;
 }
 
 async function fetchWithAuth(url: string, options: RequestInit = {}) {
@@ -326,4 +327,69 @@ export function useTaskSessions(taskId: string | null, pollInterval = 3000) {
   }, [taskId, pollInterval, loadSessions]);
 
   return { sessions, loading, reload: loadSessions };
+}
+
+/**
+ * Time-bucketed statistics for the orchestrator dashboard
+ */
+export interface OrchestratorStats {
+  range: string;
+  since: string;
+  activeAgents: number;
+  completedInPeriod: number;
+  totalTasks: number;
+  failedTasks: number;
+  inProgress: number;
+  inReview: number;
+  buckets: Array<{
+    time: string;
+    created: number;
+    completed: number;
+  }>;
+  agentUsage: Array<{
+    agent: string;
+    count: number;
+  }>;
+  agentCosts: Array<{
+    agent: string;
+    inputTokens: number;
+    outputTokens: number;
+    cost: number;
+  }>;
+}
+
+/**
+ * Hook to fetch orchestrator statistics with time-range support
+ */
+export function useOrchestratorStats(timeRange: string) {
+  const [stats, setStats] = useState<OrchestratorStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadStats = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const response = await fetch(`/api/orchestrator/stats?range=${timeRange}`, {
+        credentials: 'include',
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setStats(data);
+      } else {
+        throw new Error(`HTTP ${response.status}`);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load stats';
+      setError(message);
+    } finally {
+      setLoading(false);
+    }
+  }, [timeRange]);
+
+  useEffect(() => {
+    loadStats();
+  }, [timeRange, loadStats]);
+
+  return { stats, loading, error, reload: loadStats };
 }

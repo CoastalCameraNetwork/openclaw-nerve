@@ -139,6 +139,51 @@ async function scanSessionCosts(): Promise<SessionCostData> {
   return result;
 }
 
+/**
+ * Get token usage for a specific session label by scanning its JSONL transcript.
+ * Used for per-agent token breakdown in orchestrator dashboard.
+ */
+export async function getSessionTokenUsage(sessionLabel: string): Promise<{
+  inputTokens: number;
+  outputTokens: number;
+  cost: number;
+} | null> {
+  try {
+    const files = (await fs.readdir(config.sessionsDir)).filter((f) => f.endsWith('.jsonl'));
+
+    // Find file matching the session label
+    const matchingFile = files.find((f) => f.includes(sessionLabel.replace(/[:\s]/g, '-')));
+    if (!matchingFile) {
+      return null;
+    }
+
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cost = 0;
+
+    const rl = readline.createInterface({
+      input: createReadStream(path.join(config.sessionsDir, matchingFile)),
+      crlfDelay: Infinity,
+    });
+
+    for await (const line of rl) {
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type !== 'message' || !entry.message?.usage || entry.message.provider === 'openclaw') continue;
+
+        const { usage } = entry.message;
+        cost += usage.cost?.total || 0;
+        inputTokens += usage.input || 0;
+        outputTokens += usage.output || 0;
+      } catch { /* skip malformed */ }
+    }
+
+    return { inputTokens, outputTokens, cost: Math.round(cost * 10000) / 10000 };
+  } catch {
+    return null;
+  }
+}
+
 // ── Route ────────────────────────────────────────────────────────────
 
 app.get('/api/tokens', rateLimitGeneral, async (c) => {

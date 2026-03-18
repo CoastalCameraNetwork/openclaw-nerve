@@ -161,7 +161,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     const prevConnection = previousConnectionStateRef.current;
 
     if (connectionState === 'connected') {
-      if (prevConnection === 'reconnecting' && recoveryHook.wasGeneratingOnDisconnect()) {
+      // Bump generation on reconnect to discard any stale recovery results
+      // from before the disconnect.
+      if (prevConnection === 'reconnecting') {
+        recoveryHook.bumpGeneration();
+      }
+      if (recoveryHook.wasGeneratingOnDisconnect()) {
         recoveryHook.triggerRecovery('reconnect');
       } else {
         msgHook.loadHistory(currentSession);
@@ -182,6 +187,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     recoveryHook.triggerRecovery,
     recoveryHook.clearDisconnectState,
     recoveryHook.captureDisconnectState,
+    recoveryHook.bumpGeneration,
   ]);
 
   // ─── Periodic history poll for sub-agent sessions ─────────────────────────

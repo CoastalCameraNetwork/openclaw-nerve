@@ -27,7 +27,7 @@ const SUBAGENT_DISCOVERY_TIMEOUT_MS = 60_000;
 const SUBAGENT_DISCOVERY_POLL_MS = 1_000;
 
 export interface SpawnSessionOpts {
-  kind: 'root' | 'subagent';
+  kind?: 'root' | 'subagent';
   task: string;
   model?: string;
   thinking?: string;
@@ -49,6 +49,7 @@ interface SessionContextValue {
   refreshSessions: () => Promise<void>;
   deleteSession: (sessionKey: string) => Promise<void>;
   spawnSession: (opts: SpawnSessionOpts) => Promise<void>;
+  spawnAgent: (opts: SpawnSessionOpts) => Promise<void>; // Alias for backward compatibility
   renameSession: (sessionKey: string, label: string) => Promise<void>;
   updateSession: (sessionKey: string, updates: Partial<Session>) => void;
   agentLogEntries: AgentLogEntry[];
@@ -789,6 +790,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     refreshSessions,
     deleteSession,
     spawnSession,
+    spawnAgent: spawnSession, // Alias for backward compatibility
     renameSession,
     updateSession: updateSessionFromEvent,
     agentLogEntries,

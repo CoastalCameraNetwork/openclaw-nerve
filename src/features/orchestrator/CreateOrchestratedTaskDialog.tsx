@@ -43,16 +43,17 @@ const PRIORITIES = [
   { value: 'critical', label: 'Critical' },
 ] as const;
 
-export function CreateOrchestratedTaskDialog({ 
-  open, 
+export function CreateOrchestratedTaskDialog({
+  open,
   onOpenChange,
-  onSuccess 
+  onSuccess
 }: CreateOrchestratedTaskDialogProps) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState<'critical' | 'high' | 'normal' | 'low'>('normal');
   const [gateMode, setGateMode] = useState<'audit-only' | 'gate-on-write' | 'gate-on-deploy'>('audit-only');
   const [executeImmediately, setExecuteImmediately] = useState(false);
+  const [maxCostUSD, setMaxCostUSD] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   
   const titleRef = useRef<HTMLInputElement>(null);
@@ -69,6 +70,7 @@ export function CreateOrchestratedTaskDialog({
       setPriority('normal');
       setGateMode('audit-only');
       setExecuteImmediately(false);
+      setMaxCostUSD('');
       setError(null);
       clearPreview();
     }
@@ -101,7 +103,7 @@ export function CreateOrchestratedTaskDialog({
 
   const handleSubmit = useCallback(async () => {
     if (!isValid || creating) return;
-    
+
     setError(null);
     try {
       const result = await createTask({
@@ -111,14 +113,15 @@ export function CreateOrchestratedTaskDialog({
         gate_mode: gateMode,
         status: 'todo',
         execute_immediately: executeImmediately,
+        maxCostUSD: maxCostUSD ? parseFloat(maxCostUSD) : undefined,
       });
-      
+
       onOpenChange(false);
       onSuccess?.(result.task_id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't create task. Try again.");
     }
-  }, [isValid, creating, trimmedTitle, description, priority, gateMode, executeImmediately, createTask, onOpenChange, onSuccess]);
+  }, [isValid, creating, trimmedTitle, description, priority, gateMode, executeImmediately, maxCostUSD, createTask, onOpenChange, onSuccess]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey && document.activeElement?.tagName !== 'TEXTAREA') {
@@ -271,6 +274,24 @@ export function CreateOrchestratedTaskDialog({
                 {GATE_MODES.find(m => m.value === gateMode)?.description}
               </p>
             </div>
+          </div>
+
+          {/* Max Cost Budget */}
+          <div className="space-y-2">
+            <label htmlFor="maxCost" className="text-sm font-medium">Max Cost (USD)</label>
+            <Input
+              id="maxCost"
+              type="number"
+              value={maxCostUSD}
+              onChange={(e) => setMaxCostUSD(e.target.value)}
+              placeholder="e.g., 0.50"
+              step="0.01"
+              min="0"
+              className="w-full"
+            />
+            <p className="text-[10px] text-muted-foreground">
+              Optional budget limit. Agents will pause when this cost is exceeded.
+            </p>
           </div>
 
           {/* Execute Immediately */}

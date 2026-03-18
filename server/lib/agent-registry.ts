@@ -20,6 +20,7 @@ export interface RoutingRule {
   sequence: 'single' | 'sequential' | 'parallel';
   gate_mode: 'audit-only' | 'gate-on-write' | 'gate-on-deploy';
   description?: string;
+  model_override?: string; // Optional model for all agents in this rule (e.g., 'qwen3.5-plus' for complex tasks)
 }
 
 /**
@@ -132,6 +133,8 @@ export const SPECIALIST_AGENTS: Record<string, SpecialistAgent> = {
 /**
  * Routing rules - pattern-based agent selection.
  * Rules are evaluated in order; first match wins.
+ *
+ * model_override: Force a specific model for this rule type (bypasses complexity analysis)
  */
 export const ROUTING_RULES: RoutingRule[] = [
   {
@@ -141,6 +144,8 @@ export const ROUTING_RULES: RoutingRule[] = [
     sequence: 'sequential',
     gate_mode: 'gate-on-deploy',
     description: 'MGMT platform deployment',
+    // Multi-agent sequential deployment is complex
+    model_override: 'qwen3.5-plus',
   },
   {
     id: 'wordpress-plugin',
@@ -149,6 +154,8 @@ export const ROUTING_RULES: RoutingRule[] = [
     sequence: 'single',
     gate_mode: 'audit-only',
     description: 'WordPress plugin operations',
+    // Simple plugin updates are routine
+    model_override: 'glm-4.5',
   },
   {
     id: 'wordpress-site',
@@ -157,6 +164,8 @@ export const ROUTING_RULES: RoutingRule[] = [
     sequence: 'sequential',
     gate_mode: 'gate-on-deploy',
     description: 'WordPress site operations',
+    // Multi-agent site work with deployment
+    model_override: 'qwen3.5-plus',
   },
   {
     id: 'k8s-deploy',
@@ -165,6 +174,8 @@ export const ROUTING_RULES: RoutingRule[] = [
     sequence: 'single',
     gate_mode: 'gate-on-deploy',
     description: 'Kubernetes operations',
+    // K8s ops are tool-heavy, glm-4.5 excels here
+    model_override: 'glm-4.5',
   },
   {
     id: 'streaming-issue',
@@ -173,6 +184,8 @@ export const ROUTING_RULES: RoutingRule[] = [
     sequence: 'parallel',
     gate_mode: 'audit-only',
     description: 'Streaming infrastructure issues',
+    // Debugging streaming issues benefits from deeper reasoning
+    model_override: 'qwen3.5-plus',
   },
   {
     id: 'database-migration',
@@ -181,6 +194,8 @@ export const ROUTING_RULES: RoutingRule[] = [
     sequence: 'sequential',
     gate_mode: 'gate-on-write',
     description: 'Database migrations',
+    // Migrations are high-risk, need careful reasoning
+    model_override: 'qwen3.5-plus',
   },
   {
     id: 'security-audit',
@@ -189,6 +204,8 @@ export const ROUTING_RULES: RoutingRule[] = [
     sequence: 'single',
     gate_mode: 'audit-only',
     description: 'Security audits and PR reviews',
+    // Security analysis requires deep reasoning
+    model_override: 'qwen3.5-plus',
   },
   {
     id: 'cdn-purge',
@@ -197,6 +214,8 @@ export const ROUTING_RULES: RoutingRule[] = [
     sequence: 'single',
     gate_mode: 'audit-only',
     description: 'CDN cache purging',
+    // Simple API call, cost-efficient model
+    model_override: 'glm-4.5',
   },
   {
     id: 'storage-backup',
@@ -205,6 +224,8 @@ export const ROUTING_RULES: RoutingRule[] = [
     sequence: 'single',
     gate_mode: 'gate-on-write',
     description: 'Storage and backup operations',
+    // Tool-heavy (rsync, s3cmd), glm-4.5 excels
+    model_override: 'glm-4.5',
   },
   {
     id: 'splash-video',
@@ -213,6 +234,8 @@ export const ROUTING_RULES: RoutingRule[] = [
     sequence: 'single',
     gate_mode: 'audit-only',
     description: 'Video automation and social media',
+    // API integration work, cost-sensitive
+    model_override: 'glm-4.5',
   },
   {
     id: 'cicd-pipeline',
@@ -221,6 +244,8 @@ export const ROUTING_RULES: RoutingRule[] = [
     sequence: 'single',
     gate_mode: 'audit-only',
     description: 'CI/CD pipeline operations',
+    // Complex workflow logic
+    model_override: 'qwen3.5-plus',
   },
 ];
 
@@ -273,7 +298,99 @@ export function selectAgentsByHeuristics(description: string): {
 }
 
 /**
+ * Analyze task complexity to determine appropriate model.
+ *
+ * Factors considered:
+ * - Description length (longer = more complex)
+ * - Complex task keywords (architecture, refactor, migrate, design, etc.)
+ * - Multiple domains/agents required
+ * - Security or database work (inherently complex)
+ */
+export function analyzeComplexity(description: string, agents: string[]): 'simple' | 'complex' {
+  const descLower = description.toLowerCase();
+
+  // Factor 1: Description length
+  // Short descriptions (< 50 chars) tend to be simple tasks
+  const isLongDescription = description.length > 100;
+
+  // Factor 2: Complex task keywords
+  const complexKeywords = [
+    'architecture', 'refactor', 'migrate', 'migration', 'design',
+    'optimize', 'performance', 'scalability', 'restructure',
+    'implement', 'build', 'create', 'end-to-end', 'full-stack',
+    'security', 'audit', 'vulnerability', 'penetration',
+    'complex', 'advanced', 'multi-step', 'pipeline',
+    'analyze', 'investigate', 'debug', 'troubleshoot',
+  ];
+  const hasComplexKeywords = complexKeywords.some(kw => descLower.includes(kw));
+
+  // Factor 3: Multiple agents required (indicates multi-domain work)
+  const isMultiAgent = agents.length > 1;
+
+  // Factor 4: Inherently complex domains
+  const complexDomains = ['security-reviewer', 'database-agent', 'cicd-agent'];
+  const hasComplexDomain = agents.some(a => complexDomains.includes(a));
+
+  // Complex if: 2+ factors OR any single strong signal
+  let complexityScore = 0;
+  if (isLongDescription) complexityScore++;
+  if (hasComplexKeywords) complexityScore++;
+  if (isMultiAgent) complexityScore++;
+  if (hasComplexDomain) complexityScore++;
+
+  // Security/audit always complex
+  if (agents.includes('security-reviewer')) return 'complex';
+
+  // Database migrations always complex
+  if (agents.includes('database-agent') && descLower.includes('migration')) return 'complex';
+
+  // Multiple agents with long description = complex
+  if (isMultiAgent && isLongDescription) return 'complex';
+
+  // 2+ complexity signals = complex
+  if (complexityScore >= 2) return 'complex';
+
+  return 'simple';
+}
+
+/**
+ * Get the appropriate model for a task based on complexity and agent config.
+ *
+ * Priority:
+ * 1. Rule-level model_override (if set)
+ * 2. Complexity-based selection (qwen3.5-plus for complex, glm-4.5 for simple)
+ * 3. Agent-level model (fallback)
+ */
+export function selectModel(
+  description: string,
+  agents: string[],
+  ruleModelOverride?: string,
+  agentModels?: Array<string | undefined>
+): string | undefined {
+  // Priority 1: Rule-level override
+  if (ruleModelOverride) {
+    return ruleModelOverride;
+  }
+
+  // Priority 2: Complexity-based selection
+  const complexity = analyzeComplexity(description, agents);
+  if (complexity === 'complex') {
+    return 'qwen3.5-plus';
+  }
+
+  // For simple tasks, use glm-4.5 if all agents have it as default
+  const allGlm = agentModels?.every(m => m === 'glm-4.5') ?? false;
+  if (allGlm) {
+    return 'glm-4.5';
+  }
+
+  // Priority 3: Fall back to first agent's model
+  return agentModels?.find(m => m !== undefined);
+}
+
+/**
  * Route a task description to agents using rules or heuristics.
+ * Returns selected agents along with recommended model based on complexity.
  */
 export function routeTask(description: string): {
   agents: string[];
@@ -281,27 +398,39 @@ export function routeTask(description: string): {
   gate_mode: 'audit-only' | 'gate-on-write' | 'gate-on-deploy';
   rule_id: string | null;
   fallback_used: boolean;
+  model?: string; // Recommended model based on complexity and rule override
 } {
   // Try rules first
   for (const rule of ROUTING_RULES) {
     if (rule.pattern.test(description)) {
+      // Get agent models for this rule
+      const agentModels = rule.agents.map(a => SPECIALIST_AGENTS[a]?.model);
+
+      // Select model based on rule override or complexity
+      const model = selectModel(description, rule.agents, rule.model_override, agentModels);
+
       return {
         agents: rule.agents,
         sequence: rule.sequence,
         gate_mode: rule.gate_mode,
         rule_id: rule.id,
         fallback_used: false,
+        model,
       };
     }
   }
 
   // Fallback to heuristics
   const { agents, sequence } = selectAgentsByHeuristics(description);
+  const agentModels = agents.map(a => SPECIALIST_AGENTS[a]?.model);
+  const model = selectModel(description, agents, undefined, agentModels);
+
   return {
     agents,
     sequence,
     gate_mode: 'audit-only',
     rule_id: null,
     fallback_used: true,
+    model,
   };
 }

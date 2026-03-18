@@ -141,6 +141,11 @@ export function useChatRecovery({
     recoveryGenerationRef.current += 1;
   }, []);
 
+  /** Alias for incrementGeneration — bumps the generation on reconnect to discard stale recoveries. */
+  const bumpGeneration = useCallback(() => {
+    recoveryGenerationRef.current += 1;
+  }, []);
+
   /** Get the current generation value for stale-guard comparisons. */
   const getGeneration = useCallback(() => recoveryGenerationRef.current, []);
 
@@ -182,6 +187,7 @@ export function useChatRecovery({
     triggerRecovery,
     clearRecoveryTimer,
     incrementGeneration,
+    bumpGeneration,
     getGeneration,
     captureDisconnectState,
     wasGeneratingOnDisconnect,
@@ -193,6 +199,7 @@ export function useChatRecovery({
     triggerRecovery,
     clearRecoveryTimer,
     incrementGeneration,
+    bumpGeneration,
     getGeneration,
     captureDisconnectState,
     wasGeneratingOnDisconnect,

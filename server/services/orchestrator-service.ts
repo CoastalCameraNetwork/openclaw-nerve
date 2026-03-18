@@ -5,19 +5,15 @@
  * Integrates with OpenClaw for subagent management.
  */
 
-import { getKanbanStore, type KanbanTask } from '../lib/kanban-store.js';
+import { getKanbanStore } from '../lib/kanban-store.js';
 import {
   routeTask,
   listAgents,
   getAgent,
   type SpecialistAgent,
 } from '../lib/agent-registry.js';
-import { detectProject, type ProjectInfo } from '../lib/project-registry.js';
-import { exec } from 'node:child_process';
-import { promisify } from 'node:util';
+import type { ProjectInfo } from '../lib/project-registry.js';
 import { invokeGatewayTool } from '../lib/gateway-client.js';
-
-const execAsync = promisify(exec);
 
 export interface OrchestratorTask {
   task_id: string;
@@ -29,6 +25,7 @@ export interface OrchestratorTask {
   routing: {
     rule_id: string | null;
     fallback_used: boolean;
+    model?: string; // Recommended model based on complexity
   };
   status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   created_at: string;
@@ -40,6 +37,20 @@ export interface AgentExecutionResult {
   output: string;
   error: string;
   task_id: string;
+}
+
+/**
+ * Structured handoff data passed between sequential agents.
+ * Provides parsed, actionable context instead of truncated raw text.
+ */
+export interface AgentHandoff {
+  agent: string;
+  status: 'completed' | 'failed';
+  summary: string;
+  filesChanged: string[];
+  recommendations: string[];
+  errors: string[];
+  rawOutput?: string; // truncated for context window management
 }
 
 export interface TaskStatus {
@@ -79,10 +90,13 @@ export async function startTask(params: {
   priority?: 'critical' | 'high' | 'normal' | 'low';
   column?: 'backlog' | 'todo';
 }): Promise<OrchestratorTask> {
-  const { title, description, gate_mode = 'audit-only', priority = 'normal', column = 'todo' } = params;
+  const { title, description, gate_mode } = params;
 
   // Route the task to agents
   const routing = routeTask(description);
+
+  // Use explicit gate_mode if provided, otherwise use routing result's gate_mode
+  const effectiveGateMode = gate_mode ?? routing.gate_mode;
 
   // Generate task ID
   const taskId = `orch-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
@@ -94,16 +108,135 @@ export async function startTask(params: {
     description,
     agents: routing.agents,
     sequence: routing.sequence,
-    gate_mode,
+    gate_mode: effectiveGateMode,
     routing: {
       rule_id: routing.rule_id,
       fallback_used: routing.fallback_used,
+      model: routing.model,
     },
     status: 'queued',
     created_at: new Date().toISOString(),
   };
 
   return task;
+}
+
+/**
+ * Instruction appended to sequential agent prompts requiring structured JSON output.
+ */
+const HANDOFF_INSTRUCTION = `
+
+**OUTPUT FORMAT:** At the end of your work, output a structured summary as a JSON code block:
+\`\`\`json
+{
+  "summary": "Brief description of what you did",
+  "files_changed": ["path/to/file1.ts", "path/to/file2.ts"],
+  "recommendations": ["Follow-up action 1", "Follow-up action 2"],
+  "errors": ["Any issues encountered"]
+}
+\`\`\`
+This will be passed to the next agent in the pipeline.`;
+
+/**
+ * Parse agent output into structured handoff data.
+ * Extracts JSON block if present, falls back to raw text summary.
+ */
+function parseAgentHandoff(agentName: string, output: string): AgentHandoff {
+  const handoff: AgentHandoff = {
+    agent: agentName,
+    status: 'completed',
+    summary: '',
+    filesChanged: [],
+    recommendations: [],
+    errors: [],
+    rawOutput: output?.substring(0, 2000),
+  };
+
+  // Try to extract structured JSON from the output
+  const jsonMatch = output?.match(/```json\\s*\\n([\\s\\S]*?)\\n```/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[1]);
+      handoff.summary = parsed.summary || '';
+      handoff.filesChanged = parsed.files_changed || [];
+      handoff.recommendations = parsed.recommendations || [];
+      handoff.errors = parsed.errors || [];
+    } catch {
+      // JSON parse failed — use raw output as summary
+      handoff.summary = output?.substring(0, 500) || 'No output captured';
+    }
+  } else {
+    handoff.summary = output?.substring(0, 500) || 'No output captured';
+  }
+
+  return handoff;
+}
+
+/**
+ * Build gate mode-specific instructions for agent prompts.
+ * Controls what actions the agent is allowed to take.
+ */
+function buildGateInstructions(gateMode: 'audit-only' | 'gate-on-write' | 'gate-on-deploy'): string {
+  switch (gateMode) {
+    case 'audit-only':
+      return `**OPERATING MODE: AUDIT-ONLY**
+
+You are in read-only analysis mode. Your responsibilities:
+- Analyze the codebase and identify issues
+- Provide recommendations and suggestions
+- Do NOT make any file changes, commits, or deployments
+- Do NOT run commands that modify state (no git commit, no npm install, no file writes)
+- Output a detailed report with your findings and suggested next steps
+
+This is a non-destructive review task.`;
+
+    case 'gate-on-write':
+      return `**OPERATING MODE: GATE-ON-WRITE**
+
+You have full execution capabilities EXCEPT for file writes, which require human approval.
+
+For file modifications:
+1. Identify the files that need to be changed
+2. Write the proposed changes
+3. Submit a proposal for human approval before committing
+4. Wait for approval before proceeding with git commit
+
+You MAY:
+- Run analysis tools, linters, type checks
+- Execute read-only commands (git status, git diff, grep, etc.)
+- Create proposals for file changes
+
+You MUST NOT:
+- Commit changes without proposal approval
+- Push to remote without explicit approval
+`;
+
+    case 'gate-on-deploy':
+      return `**OPERATING MODE: GATE-ON-DEPLOY**
+
+You have full execution capabilities for development work. Only deployment actions require human approval.
+
+You MAY:
+- Make file changes and commit them
+- Run tests, linters, builds
+- Create branches and push commits
+- Refactor code, fix bugs, implement features
+
+You MUST get approval before:
+- Deploying to any environment (staging, production)
+- Running migration scripts in production
+- Modifying production infrastructure
+- Executing irreversible operations
+
+For deployment actions:
+1. Prepare the deployment plan
+2. Submit a proposal describing what will be deployed and why
+3. Wait for human approval before executing
+`;
+
+    default:
+      return '';
+  }
 }
 
 /**
@@ -115,12 +248,20 @@ export async function executeTask(
   taskDescription: string,
   agents: string[],
   sequence: 'single' | 'sequential' | 'parallel',
-  project?: ProjectInfo | null
+  gateMode?: 'audit-only' | 'gate-on-write' | 'gate-on-deploy',
+  project?: ProjectInfo | null,
+  model?: string // Optional model override from routing
 ): Promise<{ session_labels: string[] }> {
   const sessionLabels: string[] = [];
-  
+
+  // Default to audit-only if not specified (backward compatibility)
+  const effectiveGateMode = gateMode ?? 'audit-only';
+
+  // Build gate instructions based on mode
+  const gateInstructions = buildGateInstructions(effectiveGateMode);
+
   // Build context with project info if available
-  const projectContext = project 
+  const projectContext = project
     ? `\n\n**Working Directory:** ${project.localPath}\n**GitHub Repo:** ${project.githubRepo || 'N/A'}\n**Project:** ${project.name}`
     : '';
 
@@ -128,8 +269,8 @@ export async function executeTask(
     // Spawn all agents in parallel
     const promises = agents.map(async (agentName) => {
       const label = `orch-${taskId}-${agentName}`;
-      const prompt = `${taskDescription}${projectContext}`;
-      const result = await spawnAgentSession(agentName, prompt, label, project?.localPath);
+      const prompt = `${taskDescription}${projectContext}\n\n${gateInstructions}`;
+      const result = await spawnAgentSession(agentName, prompt, label, project?.localPath, model);
       if (result.session_key) {
         sessionLabels.push(label);
       }
@@ -138,20 +279,42 @@ export async function executeTask(
 
     await Promise.all(promises);
   } else {
-    // Spawn agents sequentially
-    let context = '';
+    // Spawn agents sequentially with structured handoff
+    const handoffs: AgentHandoff[] = [];
+
     for (const agentName of agents) {
       const label = `orch-${taskId}-${agentName}`;
-      const prompt = context
-        ? `${taskDescription}\n\nPrevious context: ${context}`
+
+      // Build context from previous handoffs
+      let previousContext = '';
+      if (handoffs.length > 0) {
+        previousContext = '\\n\\n**PREVIOUS AGENT RESULTS:**\\n' +
+          handoffs.map(h => `### ${h.agent} (${h.status})
+Summary: ${h.summary}
+Files changed: ${h.filesChanged.join(', ') || 'none'}
+${h.recommendations.length ? 'Recommendations: ' + h.recommendations.join('; ') : ''}
+${h.errors.length ? 'Errors: ' + h.errors.join('; ') : ''}`
+          ).join('\\n\\n');
+      }
+
+      // Build prompt with handoff instruction for sequential agents
+      const basePrompt = previousContext
+        ? `${taskDescription}${previousContext}`
         : taskDescription;
 
-      const result = await spawnAgentSession(agentName, prompt, label);
+      // Add handoff instruction only for sequential (not single)
+      const handoffPrompt = sequence === 'sequential'
+        ? `${basePrompt}${HANDOFF_INSTRUCTION}`
+        : basePrompt;
+
+      const fullPrompt = `${handoffPrompt}${projectContext}\\n\\n${gateInstructions}`;
+
+      const result = await spawnAgentSession(agentName, fullPrompt, label, project?.localPath, model);
       if (result.session_key) {
         sessionLabels.push(label);
-        // Capture output for next agent
+        // Parse handoff for next agent
         if (result.output) {
-          context += `\n\n${agentName} completed: ${result.output.substring(0, 1000)}`;
+          handoffs.push(parseAgentHandoff(agentName, result.output));
         }
       }
     }
@@ -163,7 +326,7 @@ export async function executeTask(
 /**
  * Spawn a single agent session using the Gateway sessions_spawn tool.
  * Uses subagent runtime with run mode for one-shot execution.
- * 
+ *
  * Note: sessions_spawn doesn't support cwd parameter, so working directory
  * must be included in the prompt itself.
  */
@@ -171,7 +334,8 @@ async function spawnAgentSession(
   agentName: string,
   prompt: string,
   label: string,
-  workingDir?: string
+  workingDir?: string,
+  model?: string // Optional model override from routing
 ): Promise<{ session_key?: string; output?: string; error?: string }> {
   try {
     const agent = getAgent(agentName);
@@ -181,12 +345,12 @@ async function spawnAgentSession(
 
     // Truncate label for Gateway (max 50 chars)
     const shortLabel = label.substring(0, 50);
-    
+
     // Build thinking level from agent config
     const thinking = agent.thinking ?? 'medium';
-    
-    // Build model from agent config (falls back to gateway default)
-    const model = agent.model ?? undefined;
+
+    // Build model: routing override takes priority, then agent default, then undefined
+    const effectiveModel = model ?? agent.model ?? undefined;
     
     // Include working directory in the PROMPT (sessions_spawn doesn't support cwd)
     const fullPrompt = workingDir
@@ -205,8 +369,8 @@ async function spawnAgentSession(
     };
     
     // Add model override if specified
-    if (model) {
-      spawnArgs.model = model;
+    if (effectiveModel) {
+      spawnArgs.model = effectiveModel;
     }
     
     const result = await invokeGatewayTool('sessions_spawn', spawnArgs, 30000); // 30 second timeout for spawn
@@ -228,49 +392,75 @@ async function spawnAgentSession(
 
 /**
  * Get task status including agent session states.
+ * Prefers stored metadata from kanban (reliable, persistent) over live gateway polling.
  */
 export async function getTaskStatus(taskId: string): Promise<TaskStatus | null> {
   try {
-    // Get recent subagent sessions via gateway tool
-    const result = await invokeGatewayTool('subagents', {
-      action: 'list',
-      recentMinutes: 30,
-    }, 10000);
-
-    let sessions: Array<Record<string, unknown>> = [];
-    const parsed = result as Record<string, unknown>;
-    sessions = ((parsed.active as Array<Record<string, unknown>>) || []).concat(
-      (parsed.recent as Array<Record<string, unknown>>) || []
-    );
-
-    // Find sessions for this task
-    const taskSessions = sessions.filter((s) => {
-      const label = String(s.label ?? '');
-      return label.startsWith(`orch-${taskId}-`);
-    });
-
-    // Build agent status
-    const agents = taskSessions.map((session) => {
-      const label = String(session.label ?? '');
-      const agentName = label.replace(`orch-${taskId}-`, '');
-      const status = session.status as string;
-
-      return {
-        name: agentName,
-        status: mapSessionStatus(status),
-        session_key: session.sessionKey as string | undefined,
-        output: session.output as string | undefined,
-        error: session.error as string | undefined,
-      };
-    });
-
-    // Get task from kanban store
+    // Get task from kanban store first
     const store = getKanbanStore();
     const task = await store.getTask(taskId).catch(() => null);
 
     if (!task) {
       return null;
     }
+
+    // Get stored agent output from metadata (reliable, persistent)
+    const storedOutput = (task.metadata?.agentOutput || {}) as Record<string, unknown>;
+
+    // Also check live sessions for running agents
+    let liveSessions: Array<Record<string, unknown>> = [];
+    try {
+      const result = await invokeGatewayTool('subagents', {
+        action: 'list',
+        recentMinutes: 30,
+      }, 10000);
+      const parsed = result as Record<string, unknown>;
+      liveSessions = [
+        ...((parsed.active ?? []) as Array<Record<string, unknown>>),
+        ...((parsed.recent ?? []) as Array<Record<string, unknown>>),
+      ].filter((s) => String(s.label ?? '').startsWith(`orch-${taskId}-`));
+    } catch {
+      // Gateway unavailable — rely on stored data only
+    }
+
+    // Get expected agents from task labels
+    const agentLabels = task.labels?.filter((l: string) => l.startsWith('agent:')) || [];
+    const expectedAgents = agentLabels.map((l: string) => l.replace('agent:', ''));
+
+    // Build agent status: stored metadata for completed, live for running
+    const agents = expectedAgents.map((agentName: string) => {
+      // Check stored output first
+      const stored = storedOutput[agentName] as Record<string, unknown> | undefined;
+      if (stored && (stored.status === 'done' || stored.status === 'completed' || stored.status === 'error')) {
+        return {
+          name: agentName,
+          status: stored.status === 'error' ? 'failed' as const : 'completed' as const,
+          session_key: stored.sessionKey as string | undefined,
+          output: stored.output as string | undefined,
+          error: stored.error as string | undefined,
+        };
+      }
+
+      // Check live sessions for running agents
+      const live = liveSessions.find((s) =>
+        String(s.label ?? '').endsWith(`-${agentName}`)
+      );
+      if (live) {
+        return {
+          name: agentName,
+          status: mapSessionStatus(String(live.status ?? '')),
+          session_key: live.sessionKey as string | undefined,
+          output: live.output as string | undefined,
+          error: live.error as string | undefined,
+        };
+      }
+
+      // Not found anywhere — pending or lost
+      return {
+        name: agentName,
+        status: 'pending' as const,
+      };
+    });
 
     return {
       task_id: taskId,
@@ -360,77 +550,206 @@ export async function cancelTask(taskId: string): Promise<boolean> {
 }
 
 /**
+ * Normalize a title for comparison (lowercase, remove punctuation, collapse spaces).
+ */
+function normalizeTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Check if a title is similar to any existing task titles.
+ * Uses normalized comparison - considers titles matching if normalized forms are equal.
+ */
+function isDuplicateTitle(newTitle: string, existingTitles: string[]): boolean {
+  const normalized = normalizeTitle(newTitle);
+  return existingTitles.some(existing => normalizeTitle(existing) === normalized);
+}
+
+/**
  * Parse agent output for next steps, gaps, and recommendations.
  * Creates kanban proposals from structured findings.
+ *
+ * Strategies:
+ * 1. Parse structured JSON proposals/recommendations arrays
+ * 2. Handle handoff-format recommendations from AgentHandoff
+ * 3. Detect TODO/FIXME/FOLLOW-UP patterns in raw output
+ * 4. Fall back to markdown section parsing
+ *
+ * Deduplication:
+ * - Checks against existing tasks to avoid creating duplicates
+ * - Deduplicates within the current batch
  */
 export async function createProposalsFromFindings(
   taskId: string,
   taskTitle: string,
   agentOutput: string
 ): Promise<{ proposals_created: number }> {
-  const proposals: Array<{ title: string; description: string; priority: 'high' | 'normal' | 'low' }> = [];
-  
-  // Parse output for common patterns
-  const lines = agentOutput.split('\n');
-  let currentSection: 'next_steps' | 'gaps' | 'recommendations' | null = null;
-  let buffer: string[] = [];
-  
-  for (const line of lines) {
-    const lowerLine = line.toLowerCase();
-    
-    // Detect section headers
-    if (lowerLine.includes('next step') || lowerLine.includes('next steps')) {
-      currentSection = 'next_steps';
-      buffer = [];
-      continue;
+  const proposals: Array<{
+    title: string;
+    description: string;
+    priority: 'high' | 'normal' | 'low';
+    labels?: string[];
+  }> = [];
+
+  // Get existing task titles for deduplication
+  const store = getKanbanStore();
+  const existingTasks = await store.listTasks({ limit: 500 });
+  const existingTitles = existingTasks.items.map(t => t.title);
+
+  // Strategy 1: Parse structured JSON blocks
+  const jsonBlocks = agentOutput.matchAll(/```json\s*\n([\s\S]*?)\n```/g);
+  for (const match of jsonBlocks) {
+    try {
+      const parsed = JSON.parse(match[1]);
+
+      // Handle proposals array
+      if (Array.isArray(parsed.proposals)) {
+        for (const p of parsed.proposals) {
+          if (p.title || p.description) {
+            proposals.push({
+              title: (p.title || 'Follow-up task').substring(0, 200),
+              description: `${p.description || ''}\n\n*Source: ${taskTitle}*`.substring(0, 5000),
+              priority: mapPriority(p.priority || p.severity),
+              labels: [`source:${taskId}`],
+            });
+          }
+        }
+      }
+
+      // Handle recommendations array
+      if (Array.isArray(parsed.recommendations)) {
+        for (const rec of parsed.recommendations) {
+          const recText = typeof rec === 'string' ? rec : JSON.stringify(rec);
+          proposals.push({
+            title: recText.substring(0, 200),
+            description: `Recommendation from ${taskTitle}\n\nDetails: ${recText}`,
+            priority: 'low',
+            labels: [`source:${taskId}`],
+          });
+        }
+      }
+
+      // Handle files_changed as follow-up tasks (review/testing)
+      if (Array.isArray(parsed.files_changed) && parsed.files_changed.length > 0) {
+        proposals.push({
+          title: `Review changes in ${parsed.files_changed.length} file(s)`,
+          description: `Files modified:\n${parsed.files_changed.join('\n')}\n\n*From task: ${taskTitle}*`,
+          priority: 'normal',
+          labels: [`source:${taskId}`],
+        });
+      }
+    } catch {
+      // Invalid JSON in this block, skip to next
     }
-    if (lowerLine.includes('gap') || lowerLine.includes('missing')) {
-      currentSection = 'gaps';
-      buffer = [];
-      continue;
+  }
+
+  // Strategy 2: TODO/FIXME/FOLLOW-UP pattern detection (inline patterns, not section headers)
+  const todoPattern = /(?:TODO|FIXME|FOLLOW-UP|ACTION ITEM)[:\s]+(.+?)(?:\n|$)/gi;
+  let todoMatch;
+  while ((todoMatch = todoPattern.exec(agentOutput)) !== null) {
+    const todoText = todoMatch[1].trim();
+    if (todoText.length > 0 && todoText.length < 500) {
+      const isHigh = /FIXME|BUG|CRITICAL|URGENT/i.test(todoMatch[0]);
+      proposals.push({
+        title: todoText.substring(0, 200),
+        description: `Identified in ${taskTitle}\n\nRaw: ${todoMatch[0]}`,
+        priority: isHigh ? 'high' : 'normal',
+        labels: [`source:${taskId}`, 'pattern-detected'],
+      });
     }
-    if (lowerLine.includes('recommendation') || lowerLine.includes('recommend')) {
-      currentSection = 'recommendations';
-      buffer = [];
-      continue;
+  }
+
+  // Strategy 3: Markdown section parsing (fallback if no JSON found)
+  if (proposals.length === 0) {
+    const lines = agentOutput.split('\n');
+    let currentSection: 'next_steps' | 'gaps' | 'recommendations' | null = null;
+    let buffer: string[] = [];
+
+    for (const line of lines) {
+      const lowerLine = line.toLowerCase();
+      const trimmedLine = line.trim();
+
+      // Detect section headers - only markdown headers (##, ###)
+      const isHeader = trimmedLine.startsWith('##') || trimmedLine.startsWith('###');
+
+      if (isHeader) {
+        if (lowerLine.includes('next step')) {
+          currentSection = 'next_steps';
+          buffer = [];
+          continue;
+        }
+        if (lowerLine.includes('gap')) {
+          currentSection = 'gaps';
+          buffer = [];
+          continue;
+        }
+        if (lowerLine.includes('recommendation')) {
+          currentSection = 'recommendations';
+          buffer = [];
+          continue;
+        }
+      }
+
+      // Collect bullet points
+      if (currentSection && (line.trim().startsWith('-') || line.trim().startsWith('*') || /^\d+\./.test(line.trim()))) {
+        buffer.push(line.trim().replace(/^[-*]\s*|^\d+\.\s*/, ''));
+      } else if (buffer.length > 0 && line.trim() === '') {
+        // End of bullet list - create proposal
+        const title = buffer[0] || 'Follow-up task';
+        const description = buffer.join('\n') + `\n\n*Identified during: ${taskTitle}*`;
+
+        proposals.push({
+          title: title.substring(0, 200),
+          description: description.substring(0, 5000),
+          priority: currentSection === 'gaps' ? 'high' : currentSection === 'next_steps' ? 'normal' : 'low',
+          labels: [`source:${taskId}`],
+        });
+        buffer = [];
+      }
     }
-    
-    // Collect bullet points (lines starting with - or * or numbered)
-    if (currentSection && (line.trim().startsWith('-') || line.trim().startsWith('*') || /^\d+\./.test(line.trim()))) {
-      buffer.push(line.trim().replace(/^[-*]\s*|^\d+\.\s*/, ''));
-    } else if (buffer.length > 0 && line.trim() === '') {
-      // End of bullet list - create proposal
+
+    // Process any remaining buffer
+    if (buffer.length > 0) {
       const title = buffer[0] || 'Follow-up task';
       const description = buffer.join('\n') + `\n\n*Identified during: ${taskTitle}*`;
-      
       proposals.push({
         title: title.substring(0, 200),
         description: description.substring(0, 5000),
-        priority: currentSection === 'gaps' ? 'high' : currentSection === 'next_steps' ? 'normal' : 'low',
+        priority: 'normal',
+        labels: [`source:${taskId}`],
       });
-      buffer = [];
     }
   }
-  
-  // Process any remaining buffer
-  if (buffer.length > 0) {
-    const title = buffer[0] || 'Follow-up task';
-    const description = buffer.join('\n') + `\n\n*Identified during: ${taskTitle}*`;
-    proposals.push({
-      title: title.substring(0, 200),
-      description: description.substring(0, 5000),
-      priority: 'normal',
-    });
-  }
-  
+
+  // Deduplicate proposals by title (within batch)
+  const seenInBatch = new Set<string>();
+  const uniqueProposals = proposals.filter(p => {
+    const key = p.title.toLowerCase().trim();
+    if (seenInBatch.has(key)) return false;
+    seenInBatch.add(key);
+    return true;
+  });
+
+  // Deduplicate against existing tasks
+  const dedupedProposals = uniqueProposals.filter(p => {
+    if (isDuplicateTitle(p.title, existingTitles)) {
+      console.log(`Skipping duplicate proposal: "${p.title}" (already exists)`);
+      return false;
+    }
+    return true;
+  });
+
   // Create proposals via kanban API
   let created = 0;
-  for (const proposal of proposals) {
+  for (const proposal of dedupedProposals) {
     try {
       const { exec } = await import('node:child_process');
       const execAsync = (await import('node:util')).promisify(exec);
-      
-      // Use curl to create proposal (simpler than importing full HTTP client)
+
       const curlCmd = `curl -s -X POST http://localhost:3080/api/kanban/proposals \
         -H "Content-Type: application/json" \
         -d '${JSON.stringify({
@@ -440,17 +759,34 @@ export async function createProposalsFromFindings(
             description: proposal.description,
             priority: proposal.priority,
             column: 'backlog',
+            labels: proposal.labels || [`source:${taskId}`],
           },
           sourceSessionKey: `orch-${taskId}`,
           proposedBy: 'agent:orchestrator-agent',
         })}'`;
-      
+
       await execAsync(curlCmd);
       created++;
     } catch (error) {
       console.error(`Failed to create proposal: ${proposal.title}`, error);
     }
   }
-  
+
   return { proposals_created: created };
+}
+
+/**
+ * Map agent severity/priority strings to kanban priority levels.
+ */
+function mapPriority(severity: string | number | undefined): 'high' | 'normal' | 'low' {
+  if (severity === undefined || severity === null) return 'normal';
+
+  const str = String(severity).toLowerCase();
+  if (['critical', 'urgent', 'high', 'p0', 'p1', 'severity:high'].some(s => str.includes(s))) {
+    return 'high';
+  }
+  if (['medium', 'med', 'p2', 'normal', 'standard'].some(s => str.includes(s))) {
+    return 'normal';
+  }
+  return 'low';
 }

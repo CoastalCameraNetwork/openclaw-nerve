@@ -18,6 +18,7 @@ import { config, validateConfig, printStartupBanner, probeGateway } from './lib/
 import { setupWebSocketProxy, closeAllWebSockets } from './lib/ws-proxy.js';
 import { startFileWatcher, stopFileWatcher } from './lib/file-watcher.js';
 import { startSyncLoop } from './services/orchestrator-sync.js';
+import { startSessionWatcher, stopSessionWatcher } from './services/session-watcher.js';
 
 // ── Startup banner + validation ──────────────────────────────────────
 
@@ -35,6 +36,10 @@ startFileWatcher();
 // ── Start orchestrator session sync ─────────────────────────────────
 
 startSyncLoop(10000); // Sync every 10 seconds
+
+// ── Start session watcher (fallback for webhooks) ──────────────────
+
+startSessionWatcher(5000); // Poll every 5 seconds
 
 // ── HTTP server ──────────────────────────────────────────────────────
 
@@ -165,6 +170,7 @@ function shutdown(signal: string) {
   console.log(`\n[openclaw-ui] ${signal} received, shutting down...`);
 
   stopFileWatcher();
+  stopSessionWatcher();
   closeAllWebSockets();
   releaseWhisperContext().catch(() => {});
 

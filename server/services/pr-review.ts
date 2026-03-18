@@ -381,8 +381,9 @@ export async function fixPRIssues(
   taskId: string,
   prNumber: number,
   report: PRReviewReport,
-  projectType?: string
-): Promise<{ success: boolean; commits: number; message: string }> {
+  projectType?: string,
+  projectLocalPath?: string
+): Promise<{ success: boolean; commits: number; message: string; sessionLabel?: string }> {
   try {
     // Get PR details
     const prDetails = await getPRDetails(prNumber);
@@ -419,15 +420,15 @@ Instructions:
 4. Commit changes with clear message
 5. Push to the PR branch
 
-Working directory: ${process.cwd()}/../ccn-github/mgmt`;
+Working directory: ${projectLocalPath || process.cwd()}`;
 
     // Spawn appropriate agent based on issue type
-    const agentName = criticalIssues.some(i => 
-      i.description.toLowerCase().includes('security') || 
+    const agentName = criticalIssues.some(i =>
+      i.description.toLowerCase().includes('security') ||
       i.description.toLowerCase().includes('vulnerability')
-    ) ? 'security-reviewer' : 
+    ) ? 'security-reviewer' :
     projectType === 'mgmt' ? 'mgmt-agent' : 'orchestrator-agent';
-    
+
     const { invokeGatewayTool } = await import('../lib/gateway-client.js');
     const result = await invokeGatewayTool('sessions_spawn', {
       task: fixPrompt,
@@ -437,11 +438,12 @@ Working directory: ${process.cwd()}/../ccn-github/mgmt`;
       thinking: 'high',
       cleanup: 'keep',
     }) as any;
-    
+
     return {
       success: true,
-      commits: 1, // Agent will commit
-      message: `Agent ${agentName} is fixing ${allIssues.length} issues`,
+      commits: 0, // Agent spawned but hasn't committed yet
+      message: `Agent ${agentName} spawned to fix ${allIssues.length} issues. Check task status for progress.`,
+      sessionLabel: `pr-${prNumber}-fix`,
     };
   } catch (error) {
     return {
@@ -458,11 +460,12 @@ Working directory: ${process.cwd()}/../ccn-github/mgmt`;
 export async function rerunPRReview(
   taskId: string,
   prNumber: number,
-  projectType?: string
+  projectType?: string,
+  projectLocalPath?: string
 ): Promise<PRReviewReport> {
   // Wait a moment for commits to process
   await new Promise(resolve => setTimeout(resolve, 3000));
-  
+
   // Run review again
   return await runAutomatedPRReview(taskId, prNumber, projectType);
 }

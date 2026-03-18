@@ -81,7 +81,10 @@ export interface KanbanTask {
   estimateMin?: number;
   actualMin?: number;
   feedback: TaskFeedback[];
-  
+
+  // Generic metadata for extensibility (orchestrator-specific fields)
+  metadata?: Record<string, unknown>;
+
   // GitHub PR integration
   pr?: {
     number: number;
@@ -261,7 +264,7 @@ export type AuditAction = 'create' | 'update' | 'delete' | 'reorder' | 'config_u
   | 'execute' | 'approve' | 'reject' | 'abort' | 'complete_run' | 'reconcile'
   | 'proposal_create' | 'proposal_approve' | 'proposal_reject';
 
-interface AuditEntry {
+export interface AuditEntry {
   ts: number;
   action: AuditAction;
   taskId?: string;
@@ -446,6 +449,7 @@ export class KanbanStore {
     thinking?: 'off' | 'low' | 'medium' | 'high';
     dueAt?: number;
     estimateMin?: number;
+    metadata?: Record<string, unknown>;
   }): Promise<KanbanTask> {
     return this.withLock(async () => {
       const data = await this.readRaw();
@@ -476,6 +480,7 @@ export class KanbanStore {
         thinking: input.thinking,
         dueAt: input.dueAt,
         estimateMin: input.estimateMin,
+        metadata: input.metadata,
         feedback: [],
       };
 
@@ -618,6 +623,24 @@ export class KanbanStore {
       });
       return task;
     });
+  }
+
+  // ── Audit Log ───────────────────────────────────────────────────────
+
+  /** Get audit log entries, optionally filtered by task ID. */
+  async getAuditLog(taskId?: string): Promise<AuditEntry[]> {
+    try {
+      const data = await fs.promises.readFile(this.auditPath, 'utf8');
+      const entries: AuditEntry[] = data
+        .split('\n')
+        .filter(Boolean)
+        .map(line => JSON.parse(line));
+      return taskId
+        ? entries.filter(e => e.taskId === taskId)
+        : entries;
+    } catch {
+      return [];
+    }
   }
 
   // ── Config ───────────────────────────────────────────────────────
