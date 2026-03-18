@@ -42,7 +42,8 @@ Create a new orchestrated task.
   "description": "Deploy the mgmt platform to staging environment with latest changes",
   "gate_mode": "gate-on-deploy",
   "priority": "high",
-  "execute_immediately": false
+  "execute_immediately": false,
+  "maxCostUSD": 0.50
 }
 ```
 
@@ -63,6 +64,8 @@ Create a new orchestrated task.
   "status": "todo"
 }
 ```
+
+**Optional `maxCostUSD`:** Set a budget limit. When cumulative agent cost exceeds this amount, agents are paused and a proposal alert is created for human review.
 
 ### GET /api/orchestrator/status/:id
 
@@ -117,7 +120,7 @@ List all available specialist agents.
 
 ### POST /api/orchestrator/route
 
-Preview routing for a task (dry-run, no task created).
+Preview routing for a task (dry-run, no task created). Returns selected agents and recommended model based on task complexity.
 
 **Request:**
 ```json
@@ -135,6 +138,7 @@ Preview routing for a task (dry-run, no task created).
   "gate_mode": "audit-only",
   "rule_id": "wordpress-plugin",
   "fallback_used": false,
+  "model": "glm-4.5",
   "agent_details": [
     {
       "name": "wordpress-agent",
@@ -144,6 +148,14 @@ Preview routing for a task (dry-run, no task created).
   ]
 }
 ```
+
+**Model Selection:**
+The `model` field contains the recommended model based on:
+1. **Rule override** — Matching routing rules can force a specific model
+2. **Complexity analysis** — Tasks are scored on description length, keywords, multi-agent requirements, and domain type
+   - `qwen3.5-plus`: Complex tasks (security audits, migrations, multi-agent deployments, long descriptions)
+   - `glm-4.5`: Simple tasks (API calls, routine operations, short descriptions)
+3. **Agent default** — Falls back to the agent's configured model
 
 ### POST /api/orchestrator/cancel/:id
 
@@ -170,6 +182,113 @@ Execute a kanban task (spawn agent sessions). Called when user clicks "Execute" 
   "status": "in-progress",
   "session_labels": ["orch-kb-abc123-k8s-agent", "orch-kb-abc123-mgmt-agent"],
   "agents": ["k8s-agent", "mgmt-agent"]
+}
+```
+
+### POST /api/orchestrator/webhook/session-complete
+
+Webhook endpoint called by OpenClaw Gateway when a session completes. Captures agent output, token usage, and broadcasts SSE events.
+
+**Request:**
+```json
+{
+  "session_key": "orch-kb-abc123-k8s-agent",
+  "status": "done",
+  "output": "...",
+  "tokens": {
+    "input": 1000,
+    "output": 500,
+    "cost": 0.003
+  }
+}
+```
+
+**Behavior:**
+- Stores agent output in task metadata
+- Captures token usage for cost tracking
+- Broadcasts `orchestrator.task_complete` SSE event for real-time UI updates
+- Triggers next agent in sequential mode
+- Moves task to "review" column when all agents complete
+
+### GET /api/orchestrator/task/:id/history
+
+Returns execution history including audit log, agent outputs, and state transitions.
+
+**Response:**
+```json
+{
+  "task": {
+    "id": "kb-20260314-143000-abc123",
+    "title": "Deploy mgmt to staging",
+    "status": "in-progress",
+    "priority": "high",
+    "labels": ["agent:k8s-agent", "agent:mgmt-agent"],
+    "createdAt": 1710446400000,
+    "updatedAt": 1710446500000
+  },
+  "agents": [
+    {
+      "name": "k8s-agent",
+      "status": "completed",
+      "output": "Deployment created successfully",
+      "tokens": {
+        "input": 1000,
+        "output": 500,
+        "cost": 0.003
+      },
+      "completedAt": 1710446450000
+    }
+  ],
+  "auditLog": [
+    {
+      "ts": 1710446400000,
+      "action": "created",
+      "actor": "operator"
+    },
+    {
+      "ts": 1710446410000,
+      "action": "executed",
+      "actor": "orchestrator"
+    }
+  ],
+  "pr": null
+}
+```
+
+### GET /api/orchestrator/stats
+
+Returns time-bucketed statistics for the orchestrator dashboard.
+
+**Query Parameters:**
+- `range`: Time range (`today-local`, `24h-rolling`, `7d-rolling`, etc.)
+
+**Response:**
+```json
+{
+  "range": "24h-rolling",
+  "since": "2026-03-16T23:00:00Z",
+  "activeAgents": 5,
+  "completedInPeriod": 12,
+  "totalTasks": 15,
+  "failedTasks": 1,
+  "inProgress": 2,
+  "inReview": 1,
+  "buckets": [
+    { "time": "00:00", "created": 2, "completed": 1 },
+    { "time": "01:00", "created": 1, "completed": 2 }
+  ],
+  "agentUsage": [
+    { "agent": "k8s-agent", "count": 8 },
+    { "agent": "mgmt-agent", "count": 5 }
+  ],
+  "agentCosts": [
+    {
+      "agent": "k8s-agent",
+      "inputTokens": 5000,
+      "outputTokens": 2500,
+      "cost": 0.015
+    }
+  ]
 }
 ```
 
@@ -239,15 +358,51 @@ Tasks are routed using a hybrid approach:
 - **gate-on-write**: Require approval before file writes via kanban proposals
 - **gate-on-deploy**: Require approval before deployments via kanban proposals
 
+Gate mode instructions are injected into agent prompts via `buildGateInstructions()` in `orchestrator-service.ts`. Each mode provides clear operational constraints:
+
+| Mode | Agent Capabilities |
+|------|-------------------|
+| audit-only | Read-only analysis, no file changes |
+| gate-on-write | Full execution except file writes require approval |
+| gate-on-deploy | Full development, deployment requires approval |
+
 ## Task Workflow
 
 ```
 1. Create task → "Todo" column
 2. Execute task → "In-Progress" column, agent sessions spawn
-3. Agents run → Real-time status updates via session polling
-4. Agents complete → "Review" column, results parsed for proposals
+3. Agents run → Real-time status updates via SSE events
+4. Agents complete → Webhook captures output, task → "Review" column
 5. User reviews → Approve (→ "Done") or Reject (→ "Todo")
 ```
+
+### Real-time Updates
+
+The orchestrator broadcasts real-time events via Server-Sent Events (SSE):
+
+- **Session Watcher**: Polls Gateway every 5 seconds for session status
+- **Webhook**: Gateway calls `/api/orchestrator/webhook/session-complete` on session end
+- **SSE Event**: `orchestrator.task_complete` broadcast triggers dashboard auto-refresh
+
+Frontend components subscribe via `useServerEvents()` hook for live updates.
+
+### Structured Agent Handoff
+
+For sequential agent execution, output is parsed into structured handoff data:
+
+```typescript
+interface AgentHandoff {
+  agent: string;
+  status: 'completed' | 'failed';
+  summary: string;           // AI-generated summary of work done
+  filesChanged: string[];    // List of modified files
+  recommendations: string[]; // Suggestions for next agent
+  errors: string[];          // Any errors encountered
+  rawOutput?: string;        // Truncated raw output for context
+}
+```
+
+The `parseAgentHandoff()` function extracts JSON blocks from agent output, enabling efficient context passing between sequential agents without token bloat.
 
 ## Integration with Kanban
 
