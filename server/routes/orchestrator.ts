@@ -1184,6 +1184,101 @@ app.post('/api/orchestrator/dedup/merge', rateLimitGeneral, async (c) => {
   }
 });
 
+/**
+ * POST /api/orchestrator/dedup/proposals
+ * Detect duplicate pending proposals.
+ */
+app.post('/api/orchestrator/dedup/proposals', rateLimitGeneral, async (c) => {
+  try {
+    const store = getKanbanStore();
+    const allProposals = await store.listProposals('pending');
+
+    // Group proposals by normalized title
+    const groups: Record<string, typeof allProposals> = {};
+    for (const proposal of allProposals) {
+      const normalized = normalizeTitle(proposal.payload.title as string);
+      if (!groups[normalized]) {
+        groups[normalized] = [];
+      }
+      groups[normalized].push(proposal);
+    }
+
+    // Find duplicates (groups with more than one proposal)
+    const duplicates = Object.entries(groups)
+      .filter(([_, proposals]) => proposals.length > 1)
+      .map(([normalized, proposals]) => ({
+        normalized,
+        proposals: proposals.map(p => ({
+          id: p.id,
+          title: p.payload.title as string,
+          proposedAt: p.proposedAt,
+          status: p.status,
+        })),
+        count: proposals.length,
+      }));
+
+    return c.json({
+      success: true,
+      total_proposals: allProposals.length,
+      duplicate_groups: duplicates.length,
+      duplicates,
+    });
+  } catch (error) {
+    console.error('Failed to detect duplicate proposals:', error);
+    return c.json({ error: 'Failed to detect duplicate proposals', code: ErrorCode.GATEWAY_ERROR }, 500);
+  }
+});
+
+/**
+ * POST /api/orchestrator/dedup/proposals/cleanup
+ * Remove duplicate pending proposals, keeping only the oldest for each title.
+ */
+app.post('/api/orchestrator/dedup/proposals/cleanup', rateLimitGeneral, async (c) => {
+  try {
+    const store = getKanbanStore();
+    const allProposals = await store.listProposals('pending');
+
+    // Group proposals by normalized title
+    const groups: Record<string, typeof allProposals> = {};
+    for (const proposal of allProposals) {
+      const normalized = normalizeTitle(proposal.payload.title as string);
+      if (!groups[normalized]) {
+        groups[normalized] = [];
+      }
+      groups[normalized].push(proposal);
+    }
+
+    // Find duplicates and remove all but the oldest
+    const removed: string[] = [];
+    for (const [normalized, proposals] of Object.entries(groups)) {
+      if (proposals.length > 1) {
+        // Sort by proposedAt - keep the oldest
+        proposals.sort((a, b) => a.proposedAt - b.proposedAt);
+        const toRemove = proposals.slice(1);
+
+        for (const proposal of toRemove) {
+          try {
+            // Reject the duplicate proposal
+            await store.rejectProposal(proposal.id, 'Duplicate removed by cleanup', 'operator');
+            removed.push(proposal.id);
+          } catch (err) {
+            console.error(`Failed to remove proposal ${proposal.id}:`, err);
+          }
+        }
+      }
+    }
+
+    return c.json({
+      success: true,
+      removed_count: removed.length,
+      removed,
+    });
+  } catch (error) {
+    console.error('Failed to cleanup duplicate proposals:', error);
+    return c.json({ error: 'Failed to cleanup duplicate proposals', code: ErrorCode.GATEWAY_ERROR }, 500);
+  }
+});
+
 function normalizeTitle(title: string): string {
   return title
     .toLowerCase()

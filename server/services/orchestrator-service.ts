@@ -595,10 +595,15 @@ export async function createProposalsFromFindings(
     labels?: string[];
   }> = [];
 
-  // Get existing task titles for deduplication
+  // Get existing task titles AND pending proposals for deduplication
   const store = getKanbanStore();
-  const existingTasks = await store.listTasks({ limit: 500 });
+  const [existingTasks, existingProposals] = await Promise.all([
+    store.listTasks({ limit: 500 }),
+    store.listProposals('pending'),
+  ]);
   const existingTitles = existingTasks.items.map(t => t.title);
+  // Also check pending proposals to avoid creating duplicate proposals
+  const pendingProposalTitles = existingProposals.map(p => p.payload.title as string);
 
   // Strategy 1: Parse structured JSON blocks
   const jsonBlocks = agentOutput.matchAll(/```json\s*\n([\s\S]*?)\n```/g);
@@ -734,10 +739,14 @@ export async function createProposalsFromFindings(
     return true;
   });
 
-  // Deduplicate against existing tasks
+  // Deduplicate against existing tasks AND pending proposals
   const dedupedProposals = uniqueProposals.filter(p => {
     if (isDuplicateTitle(p.title, existingTitles)) {
-      console.log(`Skipping duplicate proposal: "${p.title}" (already exists)`);
+      console.log(`Skipping duplicate proposal: "${p.title}" (task already exists)`);
+      return false;
+    }
+    if (isDuplicateTitle(p.title, pendingProposalTitles)) {
+      console.log(`Skipping duplicate proposal: "${p.title}" (pending proposal already exists)`);
       return false;
     }
     return true;
