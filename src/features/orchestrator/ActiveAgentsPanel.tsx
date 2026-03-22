@@ -43,7 +43,7 @@ function formatElapsed(ms: number): string {
   return `${h}h ${rm}m`;
 }
 
-export const ActiveAgentsPanel = memo(function ActiveAgentsPanel() {
+export const ActiveAgentsPanel = memo(function ActiveAgentsPanel({ onSessionClick }: { onSessionClick?: (taskId: string) => void }) {
   const [sessions, setSessions] = useState<ActiveSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [elapsed, setElapsed] = useState<Record<string, number>>({});
@@ -94,6 +94,16 @@ export const ActiveAgentsPanel = memo(function ActiveAgentsPanel() {
     return () => clearInterval(interval);
   }, [sessions]);
 
+  // Extract task ID from label (format: orch-{taskId}-{agentName})
+  function extractTaskId(label: string): string {
+    const parts = label.split('-');
+    if (parts.length >= 4 && parts[0] === 'orch') {
+      // Task ID is parts[1] through parts[length-2] (excluding agent name at end)
+      return parts.slice(1, parts.length - 1).join('-');
+    }
+    return '';
+  }
+
   // Extract agent name from label (format: orch-{taskId}-{agentName})
   function extractAgentName(label: string): string {
     const parts = label.split('-');
@@ -139,7 +149,13 @@ export const ActiveAgentsPanel = memo(function ActiveAgentsPanel() {
           return (
             <div
               key={session.sessionKey}
-              className={`p-3 rounded-lg border transition-colors ${
+              onClick={() => {
+                const taskId = extractTaskId(session.label);
+                if (taskId && onSessionClick) {
+                  onSessionClick(taskId);
+                }
+              }}
+              className={`p-3 rounded-lg border transition-colors cursor-pointer hover:border-primary/50 ${
                 session.status === 'running'
                   ? 'bg-cyan-500/10 border-cyan-500/30'
                   : session.status === 'done'

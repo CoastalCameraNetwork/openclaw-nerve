@@ -15,6 +15,7 @@ import { Cpu, Clock, CheckCircle2, Loader2, Users, Activity, DollarSign, Trendin
 import { useAgents, useOrchestratorStats } from './useOrchestrator';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { TaskDetailPanel } from './TaskDetailPanel';
+import { ActiveAgentsPanel } from './ActiveAgentsPanel';
 import { DollarSign as DollarSignIcon } from 'lucide-react';
 import { useServerEvents } from '../../hooks/useServerEvents';
 
@@ -537,6 +538,11 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
 
   return (
     <div className="space-y-6 p-6">
+      {/* Active Agents Panel - Shows all running sessions with output */}
+      <div className="bg-card border border-border rounded-lg shadow-sm">
+        <ActiveAgentsPanel onSessionClick={(taskId) => setSelectedTaskId(taskId)} />
+      </div>
+
       {/* Task Detail Panel */}
       {selectedTaskId && (
         <TaskDetailPanel
