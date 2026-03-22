@@ -515,6 +515,7 @@ export class KanbanStore {
         | 'run'
         | 'feedback'
         | 'pr'
+        | 'metadata'
       >
     >,
     actor?: string,

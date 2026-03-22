@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { X, Clock, CheckCircle2, AlertCircle, FileText, GitPullRequest, User, Play, Square, Loader2 } from 'lucide-react';
+import { X, Clock, CheckCircle2, AlertCircle, FileText, GitPullRequest, User, Play, Square, Loader2, Edit2, Save } from 'lucide-react';
 import { AGENT_AVATARS } from './OrchestratorDashboard';
 
 interface TaskHistory {
@@ -18,6 +18,7 @@ interface TaskHistory {
     createdAt: number;
     updatedAt: number;
     assignee?: string;
+    version?: number;
   };
   agents: Array<{
     name: string;
@@ -45,11 +46,35 @@ interface TaskDetailPanelProps {
   onClose: () => void;
 }
 
+type TaskStatus = 'todo' | 'in-progress' | 'review' | 'done' | 'cancelled';
+type TaskPriority = 'critical' | 'high' | 'normal' | 'low';
+
+interface UpdateTaskPayload {
+  title?: string;
+  description?: string | null;
+  status?: TaskStatus;
+  priority?: TaskPriority;
+  labels?: string[];
+  assignee?: string | null;
+  version: number;
+}
+
 export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
   const [history, setHistory] = useState<TaskHistory | null>(null);
   const [loading, setLoading] = useState(true);
   const [expandedAgent, setExpandedAgent] = useState<string | null>(null);
   const [expandedAudit, setExpandedAudit] = useState<number | null>(null);
+  const [editMode, setEditMode] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editStatus, setEditStatus] = useState<TaskStatus>('todo');
+  const [editPriority, setEditPriority] = useState<TaskPriority>('normal');
+  const [editLabels, setEditLabels] = useState('');
+  const [editAssignee, setEditAssignee] = useState('');
+  const [editVersion, setEditVersion] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
 
   const fetchHistory = useCallback(async () => {
     try {
@@ -57,7 +82,16 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
         credentials: 'include',
       });
       if (res.ok) {
-        setHistory(await res.json());
+        const data = await res.json();
+        setHistory(data);
+        // Initialize edit fields
+        setEditTitle(data.task.title);
+        setEditDescription(data.task.description || '');
+        setEditStatus(data.task.status as TaskStatus);
+        setEditPriority(data.task.priority as TaskPriority);
+        setEditLabels(data.task.labels.join(', '));
+        setEditAssignee(data.task.assignee || '');
+        setEditVersion(data.task.version || 0);
       }
     } catch (err) {
       console.error('Failed to fetch task history:', err);
@@ -70,6 +104,21 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
     fetchHistory();
   }, [fetchHistory]);
 
+  const handleClose = useCallback(() => {
+    if (dirty && !window.confirm('You have unsaved changes. Discard?')) return;
+    onClose();
+  }, [dirty, onClose]);
+
+  // Close on Escape key
+  useEffect(() => {
+    if (!history) return;
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') handleClose();
+    };
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [history, handleClose]);
+
   const formatTime = (ts: number) => {
     return new Date(ts).toLocaleString('en', {
       month: 'short',
@@ -78,6 +127,68 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
       minute: '2-digit',
     });
   };
+
+  const handleSave = useCallback(async () => {
+    if (!history || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const labels = editLabels
+        .split(',')
+        .map(l => l.trim())
+        .filter(Boolean);
+
+      const payload: UpdateTaskPayload = {
+        title: editTitle.trim(),
+        description: editDescription.trim() || null,
+        status: editStatus,
+        priority: editPriority,
+        labels,
+        assignee: editAssignee.trim() || null,
+        version: editVersion,
+      };
+
+      const res = await fetch(`/api/kanban/tasks/${taskId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        if (res.status === 409 && errData.error === 'version_conflict') {
+          // Refresh fields with latest server state
+          const latest = errData.latest;
+          if (latest) {
+            setEditTitle(latest.title);
+            setEditDescription(latest.description || '');
+            setEditStatus(latest.status);
+            setEditPriority(latest.priority);
+            setEditLabels(latest.labels.join(', '));
+            setEditAssignee(latest.assignee || '');
+            setEditVersion(latest.version);
+            setError('Task was modified elsewhere. Fields refreshed -- review and save again.');
+          }
+        } else {
+          throw new Error(errData.error || 'Save failed');
+        }
+      } else {
+        const result = await res.json();
+        // Update local history with saved data
+        setHistory(prev => prev ? { ...prev, task: { ...prev.task, ...result.task } } : null);
+        setEditVersion(result.task.version);
+        setDirty(false);
+        setEditMode(false);
+        // Refresh history to get latest state
+        await fetchHistory();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  }, [history, saving, editTitle, editDescription, editStatus, editPriority, editLabels, editAssignee, editVersion, taskId, fetchHistory]);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -160,22 +271,60 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/50" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/50" onClick={handleClose}>
       <div
-        className="w-full max-w-2xl h-full bg-card border-l shadow-2xl overflow-y-auto"
+        className="w-full max-w-2xl h-full bg-card border-l shadow-2xl overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="sticky top-0 z-10 p-4 border-b bg-card flex items-start justify-between gap-4">
+        <div className="shrink-0 z-10 p-4 border-b bg-card flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
-            <h2 className="text-base font-semibold truncate">{history.task.title}</h2>
+            {editMode ? (
+              <input
+                type="text"
+                value={editTitle}
+                onChange={(e) => { setEditTitle(e.target.value); setDirty(true); }}
+                className="w-full text-base font-semibold bg-transparent border-b border-input focus:border-ring focus:outline-none"
+                maxLength={500}
+              />
+            ) : (
+              <h2 className="text-base font-semibold truncate">{history.task.title}</h2>
+            )}
             <div className="flex items-center gap-2 mt-2 flex-wrap">
-              <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium border ${getStatusColor(history.task.status)}`}>
-                {history.task.status}
-              </span>
-              <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${getPriorityColor(history.task.priority)}`}>
-                {history.task.priority}
-              </span>
+              {editMode ? (
+                <>
+                  <select
+                    value={editStatus}
+                    onChange={(e) => { setEditStatus(e.target.value as TaskStatus); setDirty(true); }}
+                    className="text-[10px] px-2 py-0.5 rounded-full font-medium border bg-transparent focus:outline-none cursor-pointer"
+                  >
+                    <option value="todo">todo</option>
+                    <option value="in-progress">in-progress</option>
+                    <option value="review">review</option>
+                    <option value="done">done</option>
+                    <option value="cancelled">cancelled</option>
+                  </select>
+                  <select
+                    value={editPriority}
+                    onChange={(e) => { setEditPriority(e.target.value as TaskPriority); setDirty(true); }}
+                    className={`text-[10px] px-2 py-0.5 rounded-full font-medium border bg-transparent focus:outline-none cursor-pointer ${getPriorityColor(editPriority)}`}
+                  >
+                    <option value="critical">critical</option>
+                    <option value="high">high</option>
+                    <option value="normal">normal</option>
+                    <option value="low">low</option>
+                  </select>
+                </>
+              ) : (
+                <>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium border ${getStatusColor(history.task.status)}`}>
+                    {history.task.status}
+                  </span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${getPriorityColor(history.task.priority)}`}>
+                    {history.task.priority}
+                  </span>
+                </>
+              )}
               {history.task.assignee && (
                 <span className="text-[10px] text-muted-foreground inline-flex items-center gap-1">
                   <User size={10} />
@@ -188,6 +337,7 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
                   className="text-[10px] text-cyan-400 hover:underline inline-flex items-center gap-1"
                   target="_blank"
                   rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
                 >
                   <GitPullRequest size={10} />
                   PR #{history.pr.number}
@@ -195,31 +345,83 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
               )}
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-md hover:bg-muted transition-colors shrink-0"
-            title="Close"
-          >
-            <X size={18} className="text-muted-foreground" />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            {!editMode ? (
+              <button
+                onClick={() => setEditMode(true)}
+                className="p-1.5 rounded-md hover:bg-muted transition-colors"
+                title="Edit task"
+              >
+                <Edit2 size={16} className="text-muted-foreground" />
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={handleSave}
+                  disabled={saving || !dirty}
+                  className="p-1.5 rounded-md bg-green-600 hover:bg-green-500 transition-colors disabled:opacity-50"
+                  title="Save changes"
+                >
+                  <Save size={16} className={`text-white ${saving ? 'animate-spin' : ''}`} />
+                </button>
+                <button
+                  onClick={() => { setEditMode(false); fetchHistory(); setDirty(false); }}
+                  className="p-1.5 rounded-md hover:bg-muted transition-colors"
+                  title="Cancel"
+                >
+                  <X size={16} className="text-muted-foreground" />
+                </button>
+              </>
+            )}
+            <button
+              onClick={handleClose}
+              className="p-1.5 rounded-md hover:bg-muted transition-colors shrink-0"
+              title="Close"
+            >
+              <X size={18} className="text-muted-foreground" />
+            </button>
+          </div>
         </div>
 
-        {/* Content */}
-        <div className="p-4 space-y-6">
-          {/* Description */}
-          {history.task.description && (
-            <section>
-              <h3 className="text-sm font-semibold mb-2">Description</h3>
-              <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                {history.task.description}
-              </p>
-            </section>
+        {/* Content - Scrollable area */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-6">
+          {error && (
+            <div className="text-xs text-destructive bg-destructive/10 border border-destructive/30 rounded-md px-3 py-2 flex items-center gap-1.5">
+              <AlertCircle size={12} />
+              {error}
+            </div>
           )}
 
+          {/* Description */}
+          <section>
+            <h3 className="text-sm font-semibold mb-2">Description</h3>
+            {editMode ? (
+              <textarea
+                value={editDescription}
+                onChange={(e) => { setEditDescription(e.target.value); setDirty(true); }}
+                placeholder="Task description (markdown supported)..."
+                rows={8}
+                className="w-full min-h-[180px] rounded-md border border-input bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none resize-y"
+              />
+            ) : (
+              <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                {history.task.description || 'No description'}
+              </p>
+            )}
+          </section>
+
           {/* Labels */}
-          {history.task.labels && history.task.labels.length > 0 && (
-            <section>
-              <h3 className="text-sm font-semibold mb-2">Labels</h3>
+          <section>
+            <h3 className="text-sm font-semibold mb-2">Labels</h3>
+            {editMode ? (
+              <input
+                type="text"
+                value={editLabels}
+                onChange={(e) => { setEditLabels(e.target.value); setDirty(true); }}
+                placeholder="Comma-separated labels (e.g., bug, urgent)"
+                className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none"
+              />
+            ) : history.task.labels && history.task.labels.length > 0 ? (
               <div className="flex flex-wrap gap-2">
                 {history.task.labels.map((label, idx) => (
                   <span
@@ -230,8 +432,28 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
                   </span>
                 ))}
               </div>
-            </section>
-          )}
+            ) : (
+              <p className="text-sm text-muted-foreground">No labels</p>
+            )}
+          </section>
+
+          {/* Assignee */}
+          <section>
+            <h3 className="text-sm font-semibold mb-2">Assignee</h3>
+            {editMode ? (
+              <input
+                type="text"
+                value={editAssignee}
+                onChange={(e) => { setEditAssignee(e.target.value); setDirty(true); }}
+                placeholder="operator"
+                className="w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm text-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none"
+              />
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {history.task.assignee || 'Unassigned'}
+              </p>
+            )}
+          </section>
 
           {/* Agent Execution */}
           {history.agents && history.agents.length > 0 && (
@@ -392,6 +614,42 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
               <span>Updated: {formatTime(history.task.updatedAt)}</span>
             </div>
           </section>
+        </div>
+
+        {/* Sticky Bottom Action Bar */}
+        <div className="shrink-0 border-t border-border bg-background/90 backdrop-blur-sm px-4 py-3 flex items-center justify-between gap-3">
+          <div className="text-xs text-muted-foreground">
+            {dirty ? <span className="text-amber-400">Unsaved changes</span> : 'No changes'}
+          </div>
+          <div className="flex items-center gap-2">
+            {editMode ? (
+              <>
+                <button
+                  onClick={() => { setEditMode(false); fetchHistory(); setDirty(false); }}
+                  disabled={saving}
+                  className="px-3 py-1.5 text-xs rounded-md border border-input bg-transparent hover:bg-muted transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSave}
+                  disabled={saving || !dirty}
+                  className="px-3 py-1.5 text-xs rounded-md bg-green-600 hover:bg-green-500 text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1.5"
+                >
+                  {saving ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                  Save Changes
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => setEditMode(true)}
+                className="px-3 py-1.5 text-xs rounded-md bg-primary text-primary-foreground hover:bg-primary/90 font-medium transition-colors inline-flex items-center gap-1.5"
+              >
+                <Edit2 size={12} />
+                Edit Task
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

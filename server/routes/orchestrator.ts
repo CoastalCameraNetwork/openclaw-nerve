@@ -26,6 +26,7 @@ import {
 import { getKanbanStore, type TaskActor, type KanbanTask, type AuditEntry } from '../lib/kanban-store.js';
 import { invokeGatewayTool } from '../lib/gateway-client.js';
 import { getSessionTokenUsage } from './tokens.js';
+import { getRecentSessions, getSessionsForTask } from '../services/session-fs-reader.js';
 
 const app = new Hono();
 
@@ -389,6 +390,44 @@ app.post('/api/orchestrator/webhook/session-complete', rateLimitGeneral, async (
     const store = getKanbanStore();
     const task = await store.getTask(taskId);
 
+    // Extract agent name from label (format: orch-{taskId}-{agentName})
+    const agentName = labelStr.includes('-') ? (labelStr.split('-').pop() || 'unknown') : 'unknown';
+
+    // Persist session output to task metadata.agentOutput
+    // This ensures agent output is available even after sessions complete
+    if (task) {
+      try {
+        const existingAgentOutput = (task.metadata?.agentOutput || {}) as Record<string, any>;
+        const agentKey: string = agentName; // Ensure string type for computed property
+        const sessionStatus: 'running' | 'completed' | 'failed' = (status === 'failed' ? 'failed' : status === 'running' ? 'running' : 'completed');
+        const updatedAgentOutput = {
+          ...existingAgentOutput,
+          [agentKey]: {
+            status: sessionStatus,
+            output: output as string | undefined,
+            error: error as string | undefined,
+            sessionKey: sessionKey,
+            completedAt: Date.now(),
+            tokens: tokens || undefined,
+          },
+        };
+
+        // Update task metadata with agent output
+        // We need to use updateTask with CAS version check
+        const updatedTask = await store.updateTask(taskId, task.version, {
+          metadata: {
+            ...task.metadata,
+            agentOutput: updatedAgentOutput,
+          },
+        });
+
+        console.log(`[orchestrator] Persisted agent output for ${agentName} on task ${taskId}`);
+      } catch (persistErr) {
+        // Version conflict is OK - output will be fetched from gateway on-demand
+        console.warn(`[orchestrator] Failed to persist agent output (version conflict or other):`, persistErr);
+      }
+    }
+
     if (task && task.metadata?.maxCostUSD) {
       const budgetLimit = task.metadata.maxCostUSD as number;
 
@@ -450,42 +489,89 @@ app.post('/api/orchestrator/webhook/session-complete', rateLimitGeneral, async (
 /**
  * GET /api/orchestrator/sessions
  * Get all active agent sessions.
+ * Primary source: task metadata.agentOutput (captured by webhook handler)
+ * Secondary: filesystem scanning for sessions not captured
  */
 app.get('/api/orchestrator/sessions', rateLimitGeneral, async (c) => {
   try {
-    // Get recent subagent sessions from gateway
-    const sessionsResult = await invokeGatewayTool('subagents', {
-      action: 'list',
-      recentMinutes: 30,
-    });
+    // Get all tasks from kanban to extract sessions from metadata
+    const readRaw = async () => {
+      const fs = await import('fs');
+      const dataDir = '/root/nerve/server-dist/data/kanban';
+      const filePath = `${dataDir}/tasks.json`;
+      const raw = await fs.promises.readFile(filePath, 'utf-8');
+      return JSON.parse(raw) as { tasks: Array<any> };
+    };
+    const data = await readRaw();
 
-    const parsed = parseGatewayResponse(sessionsResult);
-    const active = (parsed.active ?? []) as Array<Record<string, unknown>>;
-    const recent = (parsed.recent ?? []) as Array<Record<string, unknown>>;
-    const allSessions = [...active, ...recent];
+    const sessions: Array<{
+      sessionKey: string;
+      label: string;
+      status: 'running' | 'completed' | 'failed';
+      output?: string;
+      error?: string;
+      createdAt?: number;
+      updatedAt?: number;
+      taskId: string;
+      agentName: string;
+      source: 'metadata' | 'filesystem';
+    }> = [];
 
-    // Filter for orchestrator sessions (labels starting with 'orch-')
-    const orchestratorSessions = allSessions
-      .filter((s) => {
-        const label = String(s.label ?? '');
-        return label.startsWith('orch-');
-      })
-      .map((s) => ({
-        sessionKey: s.sessionKey as string,
-        label: String(s.label ?? ''),
-        status: (s.status as string) || 'unknown',
-        createdAt: s.createdAt as number | undefined,
-        error: s.error as string | undefined,
-        output: s.output as string | undefined,
-      }));
+    // Extract sessions from task metadata (most reliable source)
+    for (const task of data.tasks || []) {
+      const agentOutput = task.metadata?.agentOutput || {};
+      for (const [agentName, agentData] of Object.entries(agentOutput)) {
+        const d = agentData as { output?: string; error?: string; sessionKey?: string; completedAt?: number; status?: string };
+        sessions.push({
+          sessionKey: d.sessionKey || `orch-${task.id}-${agentName}`,
+          label: `orch-${task.id}-${agentName}`,
+          status: (d.status as 'running' | 'completed' | 'failed') || 'completed',
+          output: d.output,
+          error: d.error,
+          createdAt: d.completedAt,
+          updatedAt: d.completedAt,
+          taskId: task.id,
+          agentName: agentName as string,
+          source: 'metadata' as const,
+        });
+      }
+    }
+
+    // Also include sessions from filesystem (fallback)
+    const fsSessions = await getRecentSessions(60);
+    const metadataKeys = new Set(sessions.map(s => s.sessionKey));
+
+    for (const s of fsSessions) {
+      if (metadataKeys.has(s.sessionKey)) continue;
+
+      sessions.push({
+        sessionKey: s.sessionKey,
+        label: s.label || `orch-${s.taskId || 'unknown'}-${s.agentName}`,
+        status: s.status,
+        output: s.output,
+        error: s.error,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+        taskId: s.taskId || 'unknown',
+        agentName: s.agentName,
+        source: 'filesystem' as const,
+      });
+    }
+
+    // Sort by updatedAt descending
+    sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 
     return c.json({
       success: true,
-      sessions: orchestratorSessions,
+      sessions,
     });
   } catch (error) {
     console.error('Failed to get active sessions:', error);
-    return c.json({ error: 'Failed to get sessions', code: ErrorCode.GATEWAY_ERROR }, 500);
+    return c.json({
+      success: true,
+      sessions: [],
+      error: error instanceof Error ? error.message : 'Failed to fetch sessions',
+    });
   }
 });
 
@@ -570,7 +656,8 @@ app.get('/api/orchestrator/projects', rateLimitGeneral, async (c) => {
 /**
  * GET /api/orchestrator/task/:id/sessions
  * Get all sessions (including expired) for a specific task.
- * Returns captured output from task metadata.
+ * Primary source is task metadata.agentOutput (captured by webhook handler).
+ * Falls back to filesystem scanning for sessions not captured.
  */
 app.get('/api/orchestrator/task/:id/sessions', rateLimitGeneral, async (c) => {
   try {
@@ -582,49 +669,62 @@ app.get('/api/orchestrator/task/:id/sessions', rateLimitGeneral, async (c) => {
       return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
     }
 
-    // Get captured agent output from task metadata
+    // Primary: Get captured agent output from task metadata (from webhook handler)
     const agentOutput = (task as any).metadata?.agentOutput || {};
-    
-    // Get active sessions for this task
-    const sessionsResult = await invokeGatewayTool('subagents', {
-      action: 'list',
-      recentMinutes: 60,
-    });
-    
-    const parsed = parseGatewayResponse(sessionsResult);
-    const allSessions = [
-      ...((parsed.active ?? []) as Array<Record<string, unknown>>),
-      ...((parsed.recent ?? []) as Array<Record<string, unknown>>),
-    ];
-    
-    const activeSessions = allSessions
-      .filter((s: Record<string, unknown>) => {
-        const label = String(s.label ?? '');
-        return label.includes(taskId);
-      })
-      .map((s: Record<string, unknown>) => ({
-        sessionKey: s.sessionKey as string,
-        label: String(s.label ?? ''),
-        status: (s.status as string) || 'unknown',
-        output: s.output as string | undefined,
-        error: s.error as string | undefined,
-        source: 'gateway',
-      }));
-    
-    // Get captured output from metadata
-    const capturedSessions = Object.entries(agentOutput).map(([agentName, data]: [string, any]) => ({
-      label: `orch-${taskId}-${agentName}`,
-      status: data.sessionStatus || 'done',
-      output: data.output,
-      error: data.error,
-      capturedAt: data.capturedAt,
-      source: 'captured',
-    }));
-    
+
+    const sessions: Array<{
+      sessionKey: string;
+      label: string;
+      status: 'running' | 'completed' | 'failed';
+      output?: string;
+      error?: string;
+      createdAt?: number;
+      updatedAt?: number;
+      source: 'filesystem' | 'metadata';
+    }> = [];
+
+    // Add sessions from metadata
+    for (const [agentName, data] of Object.entries(agentOutput)) {
+      const typedData = data as { output?: string; error?: string; sessionKey?: string; completedAt?: number; status?: string };
+      const sessionKey = typedData.sessionKey || `orch-${taskId}-${agentName}`;
+      sessions.push({
+        sessionKey,
+        label: `orch-${taskId}-${agentName}`,
+        status: (typedData.status as 'running' | 'completed' | 'failed') || 'completed',
+        output: typedData.output,
+        error: typedData.error,
+        createdAt: typedData.completedAt,
+        updatedAt: typedData.completedAt,
+        source: 'metadata' as 'filesystem' | 'metadata',
+      });
+    }
+
+    // Secondary: Get sessions from filesystem (fallback for sessions not captured by webhook)
+    const fsSessions = await getSessionsForTask(taskId);
+    const metadataSessionKeys = new Set(sessions.map(s => s.sessionKey));
+
+    for (const s of fsSessions) {
+      // Skip if we already have this session from metadata
+      if (metadataSessionKeys.has(s.sessionKey)) {
+        continue;
+      }
+
+      sessions.push({
+        sessionKey: s.sessionKey,
+        label: s.label || `orch-${taskId}-${s.agentName}`,
+        status: s.status,
+        output: s.output,
+        error: s.error,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+        source: 'filesystem' as 'filesystem' | 'metadata',
+      });
+    }
+
     return c.json({
       success: true,
       task: { id: task.id, title: task.title, status: task.status },
-      sessions: [...activeSessions, ...capturedSessions],
+      sessions,
     });
   } catch (error) {
     console.error('Failed to get task sessions:', error);
