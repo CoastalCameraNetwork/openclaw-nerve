@@ -32,18 +32,6 @@ const FILE_MAP: Record<string, string> = {
   heartbeat: 'HEARTBEAT.md',
 };
 
-/** Reverse map: filename → key */
-const FILENAME_TO_KEY: Record<string, string> = {};
-for (const [key, filename] of Object.entries(FILE_MAP)) {
-  FILENAME_TO_KEY[filename] = key;
-}
-
-function resolveFile(key: string, workspaceRoot: string): string | null {
-  const filename = FILE_MAP[key];
-  if (!filename) return null;
-  return path.join(workspaceRoot, filename);
-}
-
 function getWorkspaceRoot(agentId?: string): { agentId: string; workspaceRoot: string } {
   const workspace = resolveAgentWorkspace(agentId);
   return { agentId: workspace.agentId, workspaceRoot: workspace.workspaceRoot };

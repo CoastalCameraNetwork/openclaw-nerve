@@ -16,7 +16,7 @@ import { broadcast } from '../routes/events.js';
 import { config } from './config.js';
 import { resolveAgentWorkspace, type AgentWorkspace } from './agent-workspace.js';
 import { isBinary, isExcluded } from './file-utils.js';
-import { isWorkspaceLocal, clearWorkspaceDetectCache } from './workspace-detect.js';
+import { isWorkspaceLocal } from './workspace-detect.js';
 
 let rootDirWatcher: FSWatcher | null = null;
 const memoryWatchers = new Map<string, FSWatcher>();

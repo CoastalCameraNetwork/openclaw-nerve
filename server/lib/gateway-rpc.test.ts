@@ -1,6 +1,6 @@
 /** Tests for the shared gateway RPC client (persistent WebSocket). */
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
-import { WebSocketServer, WebSocket } from 'ws';
+import { WebSocketServer } from 'ws';
 
 // Mock config to point at our test server
 let testPort: number;
