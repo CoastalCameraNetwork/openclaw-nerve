@@ -284,6 +284,7 @@ app.get('/api/files/read', async (c) => {
     return handleAgentWorkspaceError(c, err);
   }
 
+  // Note: Write endpoint uses config.workspaceRemote instead to allow bootstrapping new workspaces
   const isLocal = await isWorkspaceLocal(workspace.workspaceRoot);
 
   if (isLocal) {
@@ -337,19 +338,15 @@ app.get('/api/files/read', async (c) => {
     return c.json({ ok: false, error: 'Binary file', binary: true }, 415);
   }
 
-  try {
-    const file = await gatewayFilesGet(workspace.agentId, basename);
-    if (file) {
-      return c.json({
-        ok: true,
-        content: file.content,
-        size: file.size,
-        mtime: file.updatedAtMs,
-        remoteWorkspace: true,
-      });
-    }
-  } catch (err) {
-    console.warn('[file-browser] Gateway read fallback failed:', (err as Error).message);
+  const file = await gatewayFilesGet(workspace.agentId, basename);
+  if (file) {
+    return c.json({
+      ok: true,
+      content: file.content,
+      size: file.size,
+      mtime: file.updatedAtMs,
+      remoteWorkspace: true,
+    });
   }
 
   return c.json({ ok: false, error: 'File not found', remoteWorkspace: true }, 404);
@@ -447,7 +444,7 @@ app.put('/api/files/write', async (c) => {
 
   try {
     await gatewayFilesSet(workspace.agentId, basename, content);
-    return c.json({ ok: true, remoteWorkspace: true });
+    return c.json({ ok: true, remoteWorkspace: true, mtime: Date.now() });
   } catch (err) {
     console.error('[file-browser] Gateway write fallback failed:', (err as Error).message);
     return c.json({ ok: false, error: 'Failed to write file' }, 500);

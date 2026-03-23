@@ -175,13 +175,19 @@ export function useDashboardData(options: DashboardDataOptions = {}): DashboardD
     // Check if workspace is remote (one-time per agent switch)
     const params = new URLSearchParams({ agentId: activeAgentId });
     fetch(`/api/workspace?${params.toString()}`, { signal: controller.signal })
-      .then(res => res.ok ? res.json() : null)
+      .then(res => {
+        if (res.ok) return res.json();
+        if (!controller.signal.aborted) setRemoteWorkspace(false);
+        return null;
+      })
       .then(data => {
-        if (!controller.signal.aborted) {
+        if (data && !controller.signal.aborted) {
           setRemoteWorkspace(data?.remoteWorkspace === true);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!controller.signal.aborted) setRemoteWorkspace(false);
+      });
     
     // Polling as safety net — SSE/WS provide real-time updates
     const memIv = setInterval(() => refreshMemories(controller.signal), MEMORY_POLL_INTERVAL);

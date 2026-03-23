@@ -335,6 +335,7 @@ export function MemoryList({ agentId, memories: initialMemories, onRefresh, isLo
       </div>
       )}
 
+      {!remoteWorkspace && (<>
       {/* Add Memory Dialog */}
       <AddMemoryDialog
         open={addDialogOpen}
@@ -356,6 +357,7 @@ export function MemoryList({ agentId, memories: initialMemories, onRefresh, isLo
         onConfirm={handleConfirmDelete}
         isLoading={isLoading}
       />
+      </>)}
     </div>
   );
 }

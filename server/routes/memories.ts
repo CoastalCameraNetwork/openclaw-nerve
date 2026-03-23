@@ -438,35 +438,37 @@ app.post(
       } else {
         // Remote workspace — read via gateway, modify in memory, write back
         try {
-          const file = await gatewayFilesGet(workspace.agentId, 'MEMORY.md');
-          let content = file?.content || '# MEMORY.md\n';
-          const sectionHeader = `## ${section}`;
-          const bulletLine = `- ${trimmedText}`;
+          await withMutex(getMutexKey(workspace.agentId), async () => {
+            const file = await gatewayFilesGet(workspace.agentId, 'MEMORY.md');
+            let content = file?.content || '# MEMORY.md\n';
+            const sectionHeader = `## ${section}`;
+            const bulletLine = `- ${trimmedText}`;
 
-          if (content.includes(sectionHeader)) {
-            // Find section and append bullet after it
-            const lines = content.split('\n');
-            let sectionStart = -1;
-            let sectionEnd = lines.length;
-            for (let i = 0; i < lines.length; i++) {
-              if (sectionStart === -1) {
-                if (lines[i].trim().toLowerCase() === sectionHeader.toLowerCase()) sectionStart = i;
-              } else if (lines[i].trim().startsWith('## ')) {
-                sectionEnd = i;
-                break;
+            if (content.includes(sectionHeader)) {
+              // Find section and append bullet after it
+              const lines = content.split('\n');
+              let sectionStart = -1;
+              let sectionEnd = lines.length;
+              for (let i = 0; i < lines.length; i++) {
+                if (sectionStart === -1) {
+                  if (lines[i].trim().toLowerCase() === sectionHeader.toLowerCase()) sectionStart = i;
+                } else if (lines[i].trim().startsWith('## ')) {
+                  sectionEnd = i;
+                  break;
+                }
               }
+              // Insert before next section
+              let insertAt = sectionEnd;
+              for (let i = sectionEnd - 1; i > sectionStart; i--) {
+                if (lines[i].trim() !== '') { insertAt = i + 1; break; }
+              }
+              lines.splice(insertAt, 0, bulletLine);
+              content = lines.join('\n');
+            } else {
+              content = `${content.trimEnd()}\n\n${sectionHeader}\n${bulletLine}\n`;
             }
-            // Insert before next section
-            let insertAt = sectionEnd;
-            for (let i = sectionEnd - 1; i > sectionStart; i--) {
-              if (lines[i].trim() !== '') { insertAt = i + 1; break; }
-            }
-            lines.splice(insertAt, 0, bulletLine);
-            content = lines.join('\n');
-          } else {
-            content = `${content.trimEnd()}\n\n${sectionHeader}\n${bulletLine}\n`;
-          }
-          await gatewayFilesSet(workspace.agentId, 'MEMORY.md', content);
+            await gatewayFilesSet(workspace.agentId, 'MEMORY.md', content);
+          });
         } catch (err) {
           console.error('[memories] Gateway MEMORY.md write failed:', (err as Error).message);
           return c.json({ ok: false, error: 'Failed to store memory (remote workspace)' }, 500);
@@ -583,18 +585,18 @@ app.put(
       } else {
         // Gateway fallback for MEMORY.md
         try {
-          const file = await gatewayFilesGet(workspace.agentId, 'MEMORY.md');
-          if (!file) {
-            result = { ok: false, error: 'File not found', status: 404 };
-          } else {
+          result = await withMutex(getMutexKey(workspace.agentId), async () => {
+            const file = await gatewayFilesGet(workspace.agentId, 'MEMORY.md');
+            if (!file) {
+              return { ok: false as const, error: 'File not found', status: 404 as const };
+            }
             const replaced = replaceSectionContent(file.content);
             if (!replaced.ok) {
-              result = replaced;
-            } else {
-              await gatewayFilesSet(workspace.agentId, 'MEMORY.md', replaced.newContent);
-              result = { ok: true };
+              return replaced;
             }
-          }
+            await gatewayFilesSet(workspace.agentId, 'MEMORY.md', replaced.newContent);
+            return { ok: true as const };
+          });
         } catch (err) {
           console.error('[memories] Gateway section update failed:', (err as Error).message);
           return c.json({ ok: false, error: 'Failed to update memory section' }, 500);
@@ -663,10 +665,11 @@ app.delete(
       } else {
         // Gateway fallback for MEMORY.md
         try {
-          const file = await gatewayFilesGet(workspace.agentId, 'MEMORY.md');
-          if (!file) {
-            result = { deleted: false };
-          } else {
+          result = await withMutex(getMutexKey(workspace.agentId), async () => {
+            const file = await gatewayFilesGet(workspace.agentId, 'MEMORY.md');
+            if (!file) {
+              return { deleted: false };
+            }
             const lines = file.content.split('\n');
             let modified: string[] | null = null;
 
@@ -679,11 +682,10 @@ app.delete(
             if (modified) {
               const cleaned = cleanBlankLines(modified);
               await gatewayFilesSet(workspace.agentId, 'MEMORY.md', cleaned.join('\n'));
-              result = { deleted: true, file: 'MEMORY.md' };
-            } else {
-              result = { deleted: false };
+              return { deleted: true, file: 'MEMORY.md' };
             }
-          }
+            return { deleted: false };
+          });
         } catch (err) {
           console.error('[memories] Gateway DELETE failed:', (err as Error).message);
           return c.json({ ok: false, error: 'Failed to delete memory' }, 500);

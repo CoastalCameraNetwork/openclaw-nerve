@@ -42,7 +42,7 @@ const RESTRICTED_METHODS = new Set([
 const CONTROL_UI_CLIENT_ID = 'openclaw-control-ui';
 
 /**
- * Execute a gateway RPC call via the CLI, bypassing webchat restrictions.
+ * Execute a gateway RPC call, bypassing webchat restrictions.
  * Delegates to the shared gateway-rpc module.
  */
 function gatewayCall(method: string, params: Record<string, unknown>): Promise<unknown> {

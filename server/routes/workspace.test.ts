@@ -234,6 +234,61 @@ describe('workspace routes', () => {
       expect(gatewayFilesSetMock).toHaveBeenCalledWith('main', 'SOUL.md', '# Remote Soul');
     });
 
+    it('PUT /api/workspace/:key returns 500 when gateway write fails', async () => {
+      gatewayFilesSetMock.mockRejectedValue(new Error('Gateway write failed'));
+
+      // Force remote mode via config
+      vi.resetModules();
+      vi.doMock('../lib/config.js', () => ({
+        config: {
+          auth: false,
+          port: 3000,
+          host: '127.0.0.1',
+          sslPort: 3443,
+          home: remoteHomeDir,
+          memoryPath: path.join(remoteWorkspace, 'MEMORY.md'),
+          memoryDir: path.join(remoteWorkspace, 'memory'),
+          workspaceRemote: true,
+        },
+        SESSION_COOKIE_NAME: 'nerve_session_3000',
+      }));
+      vi.doMock('../middleware/rate-limit.js', () => ({
+        rateLimitGeneral: vi.fn((_c: unknown, next: () => Promise<void>) => next()),
+      }));
+      vi.doMock('../lib/gateway-rpc.js', () => ({
+        gatewayFilesList: gatewayFilesListMock,
+        gatewayFilesGet: gatewayFilesGetMock,
+        gatewayFilesSet: gatewayFilesSetMock,
+      }));
+      const detectMod = await import('../lib/workspace-detect.js');
+      detectMod.clearWorkspaceDetectCache();
+
+      const mod = await import('./workspace.js');
+      const app = new Hono();
+      app.route('/', mod.default);
+
+      const res = await app.request('/api/workspace/soul', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: '# Fail Soul' }),
+      });
+
+      expect(res.status).toBe(500);
+      const json = (await res.json()) as { ok: boolean; error: string };
+      expect(json.ok).toBe(false);
+    });
+
+    it('GET /api/workspace/:key returns 404 when gateway read fails', async () => {
+      gatewayFilesGetMock.mockResolvedValue(null);
+
+      const app = await buildRemoteApp();
+      const res = await app.request('/api/workspace/tools');
+
+      expect(res.status).toBe(404);
+      const json = (await res.json()) as { ok: boolean; error: string };
+      expect(json.ok).toBe(false);
+    });
+
     it('GET /api/workspace lists files via gateway when workspace is remote', async () => {
       gatewayFilesListMock.mockResolvedValue([
         { name: 'SOUL.md', missing: false, size: 100, updatedAtMs: 1000 },

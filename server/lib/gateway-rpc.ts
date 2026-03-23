@@ -60,6 +60,8 @@ let connected = false;
 let connecting = false;
 const pending = new Map<string, PendingCall>();
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let connectPromise: Promise<void> | null = null;
+let connectResolve: (() => void) | null = null;
 
 /** Send a raw message, ensuring the connection is ready. */
 function wsSend(data: string): boolean {
@@ -85,6 +87,9 @@ function ensureConnection(): void {
   if (!config.gatewayToken) return; // No token = can't connect
 
   connecting = true;
+  connectPromise = new Promise<void>((resolve) => {
+    connectResolve = resolve;
+  });
   const wsUrl = getGatewayWsUrl();
 
   const socket = new WebSocket(wsUrl, {
@@ -129,6 +134,10 @@ function ensureConnection(): void {
         if (msg.ok) {
           ws = socket;
           connected = true;
+          if (connectResolve) {
+            connectResolve();
+            connectResolve = null;
+          }
           console.log('[gateway-rpc] Connected to gateway (persistent)');
         } else {
           console.error('[gateway-rpc] Gateway connect rejected:', msg.error?.message);
@@ -165,6 +174,8 @@ function ensureConnection(): void {
     ws = null;
     connected = false;
     connecting = false;
+    connectPromise = null;
+    connectResolve = null;
     rejectAllPending('Gateway connection closed');
 
     // Auto-reconnect after a delay (only if we had a working connection)
@@ -182,15 +193,20 @@ function ensureConnection(): void {
 /**
  * Execute a gateway RPC call via the persistent WebSocket connection.
  */
-export function gatewayRpcCall(
+export async function gatewayRpcCall(
   method: string,
   params: Record<string, unknown>,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 ): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    // Ensure connection exists
-    ensureConnection();
+  // Ensure connection exists
+  ensureConnection();
 
+  // Wait for connection if not yet connected
+  if (!connected && connectPromise) {
+    await connectPromise;
+  }
+
+  return new Promise((resolve, reject) => {
     const reqId = randomUUID();
 
     const timer = setTimeout(() => {
@@ -200,43 +216,12 @@ export function gatewayRpcCall(
 
     pending.set(reqId, { resolve, reject, timer });
 
-    // If already connected, send immediately
-    if (connected) {
-      const sent = wsSend(JSON.stringify({ type: 'req', id: reqId, method, params }));
-      if (!sent) {
-        pending.delete(reqId);
-        clearTimeout(timer);
-        reject(new Error('Gateway connection not ready'));
-      }
-      return;
+    const sent = wsSend(JSON.stringify({ type: 'req', id: reqId, method, params }));
+    if (!sent) {
+      pending.delete(reqId);
+      clearTimeout(timer);
+      reject(new Error('Gateway connection not ready'));
     }
-
-    // Not yet connected — wait for connection, then send
-    // The message will be sent once the connection completes
-    const checkInterval = setInterval(() => {
-      if (connected) {
-        clearInterval(checkInterval);
-        if (pending.has(reqId)) {
-          const sent = wsSend(JSON.stringify({ type: 'req', id: reqId, method, params }));
-          if (!sent) {
-            pending.delete(reqId);
-            clearTimeout(timer);
-            reject(new Error('Gateway connection lost during wait'));
-          }
-        }
-      }
-    }, 50);
-
-    // Clean up interval on timeout
-    const origTimer = timer;
-    pending.set(reqId, {
-      resolve,
-      reject: (err) => {
-        clearInterval(checkInterval);
-        reject(err);
-      },
-      timer: origTimer,
-    });
   });
 }
 
@@ -266,7 +251,8 @@ export async function gatewayFilesGet(agentId: string, name: string): Promise<Ga
     const file = result.file ?? result;
     if (!file || file.missing) return null;
     return file;
-  } catch {
+  } catch (err) {
+    console.debug('[gateway-rpc] filesGet error:', (err as Error).message);
     return null;
   }
 }
