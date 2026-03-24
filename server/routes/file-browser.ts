@@ -269,6 +269,50 @@ app.get('/api/files/tree', async (c) => {
   }
 });
 
+// ── GET /api/files/resolve ───────────────────────────────────────────
+
+app.get('/api/files/resolve', async (c) => {
+  const targetPath = c.req.query('path');
+  if (!targetPath) {
+    return c.json({ ok: false, error: 'Missing path parameter' }, 400);
+  }
+
+  let workspace: ScopedWorkspace;
+  try {
+    workspace = resolveScopedWorkspace(c.req.query('agentId'));
+  } catch (err) {
+    return handleAgentWorkspaceError(c, err);
+  }
+
+  if (!(await isWorkspaceLocal(workspace.workspaceRoot))) {
+    return c.json({ ok: false, error: 'Not supported for remote workspaces', code: 'REMOTE_WORKSPACE' }, 501);
+  }
+
+  const resolved = await resolveWorkspacePathForRoot(workspace.workspaceRoot, targetPath);
+  if (!resolved) {
+    return c.json({ ok: false, error: 'Invalid or excluded path' }, 403);
+  }
+
+  let stat;
+  try {
+    stat = await fs.stat(resolved);
+  } catch {
+    return c.json({ ok: false, error: 'Path not found' }, 404);
+  }
+
+  const relative = path.relative(workspace.workspaceRoot, resolved).split(path.sep).join('/');
+  if (!relative || relative === '.') {
+    return c.json({ ok: false, error: 'Path not found' }, 404);
+  }
+
+  return c.json({
+    ok: true,
+    path: relative,
+    type: stat.isDirectory() ? 'directory' : 'file',
+    binary: stat.isFile() ? isBinary(path.basename(resolved)) : false,
+  });
+});
+
 // ── GET /api/files/read ──────────────────────────────────────────────
 
 app.get('/api/files/read', async (c) => {

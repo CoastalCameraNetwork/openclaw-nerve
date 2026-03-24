@@ -39,6 +39,7 @@ import { createCommands } from '@/features/command-palette/commands';
 import { PanelErrorBoundary } from '@/components/PanelErrorBoundary';
 import { SpawnAgentDialog } from '@/features/sessions/SpawnAgentDialog';
 import { FileTreePanel, TabbedContentArea, useOpenFiles, type FileTreeChangeEvent } from '@/features/file-browser';
+import { isImageFile } from '@/features/file-browser/utils/fileTypes';
 import { buildAgentRootSessionKey, getSessionDisplayLabel } from '@/features/sessions/sessionKeys';
 import { shouldGuardWorkspaceSwitch } from '@/features/workspace/workspaceSwitchGuard';
 import { getWorkspaceAgentId, getWorkspaceRootSessionKey } from '@/features/workspace/workspaceScope';
@@ -124,6 +125,12 @@ export default function App({ onLogout }: AppProps) {
 
   // Track file change events for tree refresh. Sequence keeps repeated same-path updates visible.
   const [lastChangedEvent, setLastChangedEvent] = useState<FileTreeChangeEvent | null>(null);
+  const [revealRequest, setRevealRequest] = useState<{
+    id: number;
+    path: string;
+    kind: 'file' | 'directory';
+    agentId: string;
+  } | null>(null);
   const fileTreeChangeSequenceRef = useRef(0);
 
   const initialCompactLayout = typeof window !== 'undefined' && window.matchMedia('(max-width: 900px)').matches;
@@ -320,6 +327,28 @@ export default function App({ onLogout }: AppProps) {
     setPendingTaskId(taskId);
     setViewMode('kanban');
   }, [setViewMode]);
+
+  const openWorkspacePath = useCallback(async (targetPath: string) => {
+    const params = new URLSearchParams({ path: targetPath, agentId: workspaceAgentId });
+    const res = await fetch(`/api/files/resolve?${params.toString()}`);
+    const data = await res.json().catch(() => null) as {
+      ok?: boolean;
+      path?: string;
+      type?: 'file' | 'directory';
+      binary?: boolean;
+    } | null;
+
+    if (!res.ok || !data?.ok || !data.path || !data.type) return;
+
+    if (data.type === 'file' && (!data.binary || isImageFile(data.path))) {
+      setRevealRequest(null);
+      await openFile(data.path);
+      return;
+    }
+
+    setFileBrowserCollapsed(false);
+    setRevealRequest({ id: Date.now(), path: data.path, kind: data.type, agentId: workspaceAgentId });
+  }, [openFile, setFileBrowserCollapsed, workspaceAgentId]);
 
   const toggleMobileTopBar = useCallback(() => {
     setIsMobileTopBarHidden((prev) => !prev);
@@ -627,6 +656,7 @@ export default function App({ onLogout }: AppProps) {
             isFileBrowserCollapsed={fileBrowserCollapsed}
             onToggleMobileTopBar={isCompactLayout ? toggleMobileTopBar : undefined}
             isMobileTopBarHidden={isMobileTopBarHidden}
+            onOpenWorkspacePath={openWorkspacePath}
           />
         </PanelErrorBoundary>
       }
@@ -839,6 +869,7 @@ export default function App({ onLogout }: AppProps) {
                 workspaceAgentId={workspaceAgentId}
                 onOpenFile={openFile}
                 lastChangedEvent={lastChangedEvent}
+                revealRequest={revealRequest}
                 onRemapOpenPaths={remapOpenPaths}
                 onCloseOpenPaths={closeOpenPathsByPrefix}
                 isCompactLayout={false}
@@ -864,6 +895,7 @@ export default function App({ onLogout }: AppProps) {
                     workspaceAgentId={workspaceAgentId}
                     onOpenFile={openFile}
                     lastChangedEvent={lastChangedEvent}
+                    revealRequest={revealRequest}
                     onRemapOpenPaths={remapOpenPaths}
                     onCloseOpenPaths={closeOpenPathsByPrefix}
                     isCompactLayout={true}

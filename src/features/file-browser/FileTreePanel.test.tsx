@@ -71,6 +71,7 @@ const defaultMockHook = {
   selectFile: vi.fn(),
   refresh: vi.fn(),
   handleFileChange: vi.fn(),
+  revealPath: vi.fn(),
 };
 
 describe('FileTreePanel', () => {
@@ -96,6 +97,42 @@ describe('FileTreePanel', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  describe('reveal requests', () => {
+    it('reveals the requested path once for the active workspace', () => {
+      const revealPath = vi.fn();
+      mockUseFileTree.mockReturnValue({
+        ...defaultMockHook,
+        revealPath,
+      });
+
+      const { rerender } = render(
+        <FileTreePanel
+          workspaceAgentId="main"
+          onOpenFile={mockOnOpenFile}
+          onRemapOpenPaths={mockOnRemapOpenPaths}
+          onCloseOpenPaths={mockOnCloseOpenPaths}
+          revealRequest={{ id: 1, path: 'src/index.ts', kind: 'file', agentId: 'main' }}
+          collapsed={false}
+        />,
+      );
+
+      expect(revealPath).toHaveBeenCalledWith('src/index.ts', 'file', 'main');
+
+      rerender(
+        <FileTreePanel
+          workspaceAgentId="main"
+          onOpenFile={mockOnOpenFile}
+          onRemapOpenPaths={mockOnRemapOpenPaths}
+          onCloseOpenPaths={mockOnCloseOpenPaths}
+          revealRequest={{ id: 1, path: 'src/index.ts', kind: 'file', agentId: 'main' }}
+          collapsed={false}
+        />,
+      );
+
+      expect(revealPath).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('header display', () => {

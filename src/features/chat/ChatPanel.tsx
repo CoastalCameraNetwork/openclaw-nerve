@@ -41,6 +41,8 @@ interface ChatPanelProps {
   onToggleMobileTopBar?: () => void;
   /** Whether the mobile top bar is currently hidden. */
   isMobileTopBarHidden?: boolean;
+  /** Open or reveal a safe workspace path in the file explorer/editor. */
+  onOpenWorkspacePath?: (path: string) => void | Promise<void>;
 }
 
 export interface ChatPanelHandle {
@@ -56,6 +58,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
   onWakeWordState, onReset, searchOpen, onSearchClose, id, agentName = 'Agent',
   loadMore, hasMore = false, onToggleFileBrowser, isFileBrowserCollapsed = true,
   onToggleMobileTopBar, isMobileTopBarHidden = false,
+  onOpenWorkspacePath,
 }, ref) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const messageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -329,6 +332,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
                 searchQuery={search.query}
                 isCurrentMatch={isCurrentMatch}
                 agentName={agentName}
+                onOpenWorkspacePath={onOpenWorkspacePath}
               />
             </div>
           );

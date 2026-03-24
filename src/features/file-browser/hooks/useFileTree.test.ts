@@ -352,6 +352,55 @@ describe('useFileTree', () => {
       expect(typeof result.current.selectFile).toBe('function');
     });
 
+    it('reveals a nested workspace path by expanding its parent directories', async () => {
+      const mockFetch = vi.mocked(fetch);
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            ok: true,
+            entries: [
+              { name: 'src', path: 'src', type: 'directory' as const, children: null },
+            ],
+            workspaceInfo: { isCustomWorkspace: false, rootPath: '/workspace' },
+          }),
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            ok: true,
+            entries: [
+              { name: 'features', path: 'src/features', type: 'directory' as const, children: null },
+            ],
+          }),
+        } as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            ok: true,
+            entries: [
+              { name: 'demo.tsx', path: 'src/features/demo.tsx', type: 'file' as const, children: null },
+            ],
+          }),
+        } as Response);
+
+      const { result } = renderHook(() => useFileTree());
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      await act(async () => {
+        await result.current.revealPath('src/features/demo.tsx', 'file');
+      });
+
+      await waitFor(() => {
+        expect(result.current.expandedPaths.has('src')).toBe(true);
+        expect(result.current.expandedPaths.has('src/features')).toBe(true);
+        expect(result.current.selectedPath).toBe('src/features/demo.tsx');
+      });
+    });
+
     it('persists expanded paths in localStorage', async () => {
       const mockLocalStorage = vi.mocked(localStorage);
       mockLocalStorage.getItem.mockReturnValue('["src","components"]');
@@ -424,6 +473,7 @@ describe('useFileTree', () => {
         'selectFile',
         'refresh',
         'handleFileChange',
+        'revealPath',
       ];
 
       expect(returnKeys).toEqual(expect.arrayContaining(expectedKeys));

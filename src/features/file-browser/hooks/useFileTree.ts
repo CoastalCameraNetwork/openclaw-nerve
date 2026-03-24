@@ -87,6 +87,17 @@ function clearEntryFromTree(entries: TreeEntry[], targetPath: string): TreeEntry
   });
 }
 
+function findEntry(entries: TreeEntry[], targetPath: string): TreeEntry | null {
+  for (const entry of entries) {
+    if (entry.path === targetPath) return entry;
+    if (entry.type === 'directory' && entry.children) {
+      const found = findEntry(entry.children, targetPath);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 function buildTreeUrl(dirPath: string, agentId: string): string {
   const params = new URLSearchParams({ depth: '1', agentId });
   if (dirPath) params.set('path', dirPath);
@@ -97,6 +108,7 @@ function buildTreeUrl(dirPath: string, agentId: string): string {
 export function useFileTree(agentId = DEFAULT_AGENT_ID) {
   const scopedAgentId = normalizeAgentId(agentId);
   const [entries, setEntries] = useState<TreeEntry[]>([]);
+  const entriesRef = useRef<TreeEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => loadExpandedPaths(scopedAgentId));
@@ -123,6 +135,10 @@ export function useFileTree(agentId = DEFAULT_AGENT_ID) {
       mountedRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    entriesRef.current = entries;
+  }, [entries]);
 
   // Persist expanded paths
   useEffect(() => {
@@ -234,17 +250,6 @@ export function useFileTree(agentId = DEFAULT_AGENT_ID) {
 
     if (expandedPaths.has(dirPath)) return;
 
-    const findEntry = (treeEntries: TreeEntry[], target: string): TreeEntry | null => {
-      for (const entry of treeEntries) {
-        if (entry.path === target) return entry;
-        if (entry.children) {
-          const found = findEntry(entry.children, target);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
-
     const entry = findEntry(entries, dirPath);
     if (entry?.children !== null && entry?.children !== undefined) return;
 
@@ -314,6 +319,66 @@ export function useFileTree(agentId = DEFAULT_AGENT_ID) {
     }
   }, [expandedPaths, refreshDirectory]);
 
+  const ensureDirectoryLoaded = useCallback(async (dirPath: string, requestAgentId = agentIdRef.current) => {
+    const entry = findEntry(entriesRef.current, dirPath);
+    if (entry?.type !== 'directory') return;
+    if (entry.children !== null && entry.children !== undefined) return;
+
+    setLoadingPaths((prev) => new Set([...prev, dirPath]));
+    const children = await fetchChildren(dirPath, requestAgentId);
+    if (!mountedRef.current || agentIdRef.current !== requestAgentId) return;
+
+    setLoadingPaths((prev) => {
+      const next = new Set(prev);
+      next.delete(dirPath);
+      return next;
+    });
+
+    if (children) {
+      setEntries((prev) => {
+        const next = mergeChildren(prev, dirPath, children);
+        entriesRef.current = next;
+        return next;
+      });
+    }
+  }, [fetchChildren]);
+
+  const revealPath = useCallback(async (
+    targetPath: string,
+    kind: 'file' | 'directory',
+    targetAgentId = scopedAgentId,
+  ) => {
+    const requestAgentId = normalizeAgentId(targetAgentId);
+    if (agentIdRef.current !== requestAgentId) {
+      if (kind === 'file') {
+        saveSelectedPath(requestAgentId, targetPath);
+      }
+      return;
+    }
+
+    const normalized = targetPath.replace(/^\.\//, '').replace(/^\/+|\/+$/g, '');
+    if (!normalized) return;
+
+    const segments = normalized.split('/').filter(Boolean);
+    const ancestors = kind === 'directory'
+      ? segments.map((_, index) => segments.slice(0, index + 1).join('/'))
+      : segments.slice(0, -1).map((_, index) => segments.slice(0, index + 1).join('/'));
+
+    for (const dirPath of ancestors) {
+      setExpandedPaths((prev) => {
+        if (prev.has(dirPath)) return prev;
+        const next = new Set(prev);
+        next.add(dirPath);
+        return next;
+      });
+      await ensureDirectoryLoaded(dirPath, requestAgentId);
+    }
+
+    if (kind === 'file') {
+      setSelectedPathState(normalized);
+    }
+  }, [ensureDirectoryLoaded, scopedAgentId]);
+
   return {
     entries: visibleEntries,
     loading: visibleLoading,
@@ -326,5 +391,6 @@ export function useFileTree(agentId = DEFAULT_AGENT_ID) {
     selectFile,
     refresh,
     handleFileChange,
+    revealPath,
   };
 }
