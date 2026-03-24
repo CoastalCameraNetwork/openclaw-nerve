@@ -112,6 +112,12 @@ describe('file-browser routes', () => {
       expect(json).toEqual({ ok: true, path: 'docs', type: 'directory', binary: false });
     });
 
+    it('returns 404 for safe missing targets inside the workspace root', async () => {
+      const app = await buildApp();
+      const res = await app.request('/api/files/resolve?path=missing-note.md');
+      expect(res.status).toBe(404);
+    });
+
     it('returns 403 for invalid or excluded targets', async () => {
       const app = await buildApp();
       const res = await app.request('/api/files/resolve?path=../../etc');

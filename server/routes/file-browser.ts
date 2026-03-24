@@ -288,7 +288,11 @@ app.get('/api/files/resolve', async (c) => {
     return c.json({ ok: false, error: 'Not supported for remote workspaces', code: 'REMOTE_WORKSPACE' }, 501);
   }
 
-  const resolved = await resolveWorkspacePathForRoot(workspace.workspaceRoot, targetPath);
+  const resolved = await resolveWorkspacePathForRoot(
+    workspace.workspaceRoot,
+    targetPath,
+    { allowNonExistent: true },
+  );
   if (!resolved) {
     return c.json({ ok: false, error: 'Invalid or excluded path' }, 403);
   }

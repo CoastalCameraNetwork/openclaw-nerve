@@ -378,6 +378,7 @@ export const MessageBubble = memo(MessageBubbleInner, (prev, next) => {
   
   // Agent name (rare change but must re-render when it does)
   if (prev.agentName !== next.agentName) return false;
+  if (prev.onOpenWorkspacePath !== next.onOpenWorkspacePath) return false;
   
   // All relevant props are equal, skip re-render
   return true;
