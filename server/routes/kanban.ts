@@ -70,11 +70,36 @@ export function cleanupKanbanPollers(): void {
   activePollTimers.clear();
 }
 
-/** Poll gateway subagents for a kanban run label until it finishes, then complete the run. */
+interface KanbanRunIdentity {
+  correlationKey: string;
+  childSessionKey?: string;
+  runId?: string;
+}
+
+function findGatewayRunMatch(
+  sessions: Array<Record<string, unknown>>,
+  identity: KanbanRunIdentity,
+): Record<string, unknown> | undefined {
+  if (identity.childSessionKey) {
+    const byChildSessionKey = sessions.find((session) => (
+      String(session.childSessionKey ?? session.sessionKey ?? session.sessionId ?? '') === identity.childSessionKey
+    ));
+    if (byChildSessionKey) return byChildSessionKey;
+  }
+
+  if (identity.runId) {
+    const byRunId = sessions.find((session) => String(session.runId ?? '') === identity.runId);
+    if (byRunId) return byRunId;
+  }
+
+  return sessions.find((session) => String(session.label ?? '') === identity.correlationKey);
+}
+
+/** Poll gateway subagents for a kanban run until it finishes, then complete the run. */
 function pollSessionCompletion(
   store: ReturnType<typeof getKanbanStore>,
   taskId: string,
-  label: string,
+  identity: KanbanRunIdentity,
   intervalMs = 5_000,
   maxAttempts = 720, // 60 minutes max
 ): void {
@@ -83,15 +108,22 @@ function pollSessionCompletion(
   const poll = async () => {
     attempts++;
     if (attempts > maxAttempts) {
-      console.warn(`[kanban] Polling timed out for task ${taskId} (label: ${label})`);
-      await store.completeRun(taskId, undefined, 'Run timed out (polling limit reached)').catch(() => {});
+      console.warn(`[kanban] Polling timed out for task ${taskId} (runKey: ${identity.correlationKey})`);
+      await store.completeRun(taskId, identity.correlationKey, undefined, 'Run timed out (polling limit reached)').catch(() => {});
       return;
     }
 
     try {
-      // Check if task is still in-progress before polling
+      // Stop stale pollers once the task leaves this active run.
       const task = await store.getTask(taskId).catch(() => null);
-      if (!task || task.status !== 'in-progress') return; // task was moved/aborted, stop
+      if (
+        !task
+        || task.status !== 'in-progress'
+        || task.run?.status !== 'running'
+        || task.run?.sessionKey !== identity.correlationKey
+      ) {
+        return; // task was moved, aborted, or rerun under a newer session key
+      }
 
       const raw = await invokeGatewayTool('subagents', { action: 'list', recentMinutes: 120 });
       const parsed = parseGatewayResponse(raw);
@@ -101,9 +133,7 @@ function pollSessionCompletion(
       const recent = (parsed.recent ?? []) as Array<Record<string, unknown>>;
       const all = [...active, ...recent];
 
-      // Labels are now kb-{slug}-{timestamp} (max ~47 chars), well under
-      // the gateway's ~50 char truncation limit. Exact match only.
-      const match = all.find((s) => String(s.label ?? '') === label);
+      const match = findGatewayRunMatch(all, identity);
 
       if (!match) {
         // Not found yet -- may not have registered, keep trying
@@ -112,59 +142,71 @@ function pollSessionCompletion(
       }
 
       const status = match.status as string;
+      const childSessionKey = typeof match.childSessionKey === 'string'
+        ? match.childSessionKey
+        : typeof match.sessionKey === 'string'
+          ? match.sessionKey
+          : typeof match.sessionId === 'string'
+            ? match.sessionId
+            : identity.childSessionKey;
 
       if (status === 'done') {
         // Fetch session history to get the result text
         let resultText = 'Completed (no result text)';
-        try {
-          const histRaw = await invokeGatewayTool('sessions_history', {
-            sessionKey: match.sessionKey,
-            limit: 3,
-          });
-          const histParsed = parseGatewayResponse(histRaw);
-          const messages = (histParsed.messages ?? []) as Array<Record<string, unknown>>;
-          const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
-          if (lastAssistant) {
-            const content = lastAssistant.content;
-            if (typeof content === 'string') {
-              resultText = content;
-            } else if (Array.isArray(content)) {
-              const textPart = (content as Array<Record<string, unknown>>).find((p) => p.type === 'text');
-              if (textPart && typeof textPart.text === 'string') resultText = textPart.text;
+        if (!childSessionKey) {
+          console.warn(`[kanban] Run ${identity.correlationKey} completed without a child session key`);
+        } else {
+          try {
+            const histRaw = await invokeGatewayTool('sessions_history', {
+              sessionKey: childSessionKey,
+              limit: 3,
+            });
+            const histParsed = parseGatewayResponse(histRaw);
+            const messages = (histParsed.messages ?? []) as Array<Record<string, unknown>>;
+            const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
+            if (lastAssistant) {
+              const content = lastAssistant.content;
+              if (typeof content === 'string') {
+                resultText = content;
+              } else if (Array.isArray(content)) {
+                const textPart = (content as Array<Record<string, unknown>>).find((p) => p.type === 'text');
+                if (textPart && typeof textPart.text === 'string') resultText = textPart.text;
+              }
             }
+          } catch (err) {
+            console.warn(`[kanban] Could not fetch history for ${identity.correlationKey}:`, err);
           }
-        } catch (err) {
-          console.warn(`[kanban] Could not fetch history for ${label}:`, err);
         }
 
-        // Parse kanban markers from the result and create proposals
         const markers = parseKanbanMarkers(resultText);
+        const cleanResult = markers.length > 0 ? stripKanbanMarkers(resultText) : resultText;
+
+        const completedTask = await store.completeRun(taskId, identity.correlationKey, cleanResult).catch((err) => {
+          console.error(`[kanban] Failed to complete run for task ${taskId}:`, err);
+          return null;
+        });
+        if (!completedTask) return;
+
+        console.log(`[kanban] Run completed for task ${taskId} (runKey: ${identity.correlationKey})`);
+
         for (const marker of markers) {
           try {
             await store.createProposal({
               type: marker.type,
               payload: marker.payload,
-              sourceSessionKey: label,
-              proposedBy: `agent:${label}`,
+              sourceSessionKey: identity.correlationKey,
+              proposedBy: `agent:${identity.correlationKey}`,
             });
           } catch (err) {
             console.warn(`[kanban] Failed to create proposal from marker:`, err);
           }
         }
-
-        // Strip markers from the stored result text
-        const cleanResult = markers.length > 0 ? stripKanbanMarkers(resultText) : resultText;
-
-        console.log(`[kanban] Run completed for task ${taskId} (label: ${label})`);
-        await store.completeRun(taskId, cleanResult).catch((err) => {
-          console.error(`[kanban] Failed to complete run for task ${taskId}:`, err);
-        });
         return;
       }
 
       if (status === 'error' || status === 'failed') {
         const errorMsg = (match.error as string) || 'Agent session failed';
-        await store.completeRun(taskId, undefined, errorMsg).catch(() => {});
+        await store.completeRun(taskId, identity.correlationKey, undefined, errorMsg).catch(() => {});
         return;
       }
 
@@ -203,6 +245,7 @@ const feedbackSchema = z.object({
 
 const runLinkSchema = z.object({
   sessionKey: z.string(),
+  childSessionKey: z.string().optional(),
   sessionId: z.string().optional(),
   runId: z.string().optional(),
   startedAt: z.number(),
@@ -414,7 +457,7 @@ app.patch('/api/kanban/tasks/:id', rateLimitGeneral, async (c) => {
   // Convert nulls to undefined for optional clearing
   const cleanPatch = Object.fromEntries(
     Object.entries(rawPatch)
-      .filter(([, v]) => v !== undefined)
+      .filter(([k, v]) => k !== 'run' && v !== undefined)
       .map(([k, v]) => [k, v === null ? undefined : v]),
   ) as Record<string, unknown>;
 
@@ -715,10 +758,15 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
 
     // Spawn agent session via gateway (fire-and-forget)
     const taskDescription = task.description || task.title;
+    const runSessionKey = task.run?.sessionKey;
+    if (!runSessionKey) {
+      throw new Error(`executeTask did not produce a run session key for task ${id}`);
+    }
+
     const spawnArgs: Record<string, unknown> = {
       task: `You are working on a Kanban task.\n\nTitle: ${task.title}\n\nDescription: ${taskDescription}\n\nDeliver your result as a clear summary of what was done.`,
       mode: 'run',
-      label: `kb-${id}`,
+      label: runSessionKey,
     };
     // Use task's model, or board default. If neither is set, omit — OpenClaw
     // will use whatever default model the operator configured in openclaw.json.
@@ -728,15 +776,38 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
     const thinking = task.thinking || config.defaultThinking;
     if (thinking) spawnArgs.thinking = thinking;
 
-    const runLabel = `kb-${id}`;
     invokeGatewayTool('sessions_spawn', spawnArgs)
-      .then(() => {
-        // Poll for session completion in the background
-        pollSessionCompletion(store, id, runLabel);
+      .then(async (spawnRaw) => {
+        const spawn = parseGatewayResponse(spawnRaw);
+        const childSessionKey = typeof spawn.childSessionKey === 'string'
+          ? spawn.childSessionKey
+          : typeof spawn.sessionKey === 'string'
+            ? spawn.sessionKey
+            : typeof spawn.sessionId === 'string'
+              ? spawn.sessionId
+              : undefined;
+        const runId = typeof spawn.runId === 'string' ? spawn.runId : undefined;
+
+        const linkedTask = await store.attachRunIdentifiers(id, runSessionKey, {
+          childSessionKey,
+          runId,
+        });
+        if (!linkedTask) {
+          console.warn(`[kanban] Spawned run metadata arrived after task ${id} moved on from run ${runSessionKey}`);
+          return;
+        }
+
+        // Poll for session completion in the background, preferring the stable
+        // spawned identifiers before falling back to the human-readable label.
+        pollSessionCompletion(store, id, {
+          correlationKey: runSessionKey,
+          childSessionKey: linkedTask.run?.childSessionKey ?? childSessionKey,
+          runId: linkedTask.run?.runId ?? runId,
+        });
       })
       .catch((err) => {
         console.error(`[kanban] Failed to spawn session for task ${id}:`, err);
-        store.completeRun(id, undefined, `Spawn failed: ${err.message}`).catch(() => {});
+        store.completeRun(id, runSessionKey, undefined, `Spawn failed: ${err.message}`).catch(() => {});
       });
 
     return c.json(task);
@@ -834,6 +905,7 @@ app.post('/api/kanban/tasks/:id/abort', rateLimitGeneral, async (c) => {
 // ── Completion webhook ───────────────────────────────────────────────
 
 const completeSchema = z.object({
+  sessionKey: z.string().min(1).max(500),
   result: z.string().max(50_000).optional(),
   error: z.string().max(5000).optional(),
 });
@@ -860,29 +932,26 @@ app.post('/api/kanban/tasks/:id/complete', rateLimitGeneral, async (c) => {
   }
 
   try {
-    let resultText = parsed.data.result;
+    const { sessionKey, error } = parsed.data;
+    const resultText = parsed.data.result;
+    const markers = resultText && !error ? parseKanbanMarkers(resultText) : [];
+    const cleanResult = markers.length > 0 ? stripKanbanMarkers(resultText!) : resultText;
 
-    // Parse kanban markers from the result text and create proposals
-    if (resultText && !parsed.data.error) {
-      const markers = parseKanbanMarkers(resultText);
-      for (const marker of markers) {
-        try {
-          await store.createProposal({
-            type: marker.type,
-            payload: marker.payload,
-            sourceSessionKey: `complete:${id}`,
-            proposedBy: 'operator',
-          });
-        } catch (err) {
-          console.warn(`[kanban] Failed to create proposal from marker in complete:`, err);
-        }
-      }
-      if (markers.length > 0) {
-        resultText = stripKanbanMarkers(resultText);
+    const task = await store.completeRun(id, sessionKey, cleanResult, error);
+
+    for (const marker of markers) {
+      try {
+        await store.createProposal({
+          type: marker.type,
+          payload: marker.payload,
+          sourceSessionKey: sessionKey,
+          proposedBy: `agent:${sessionKey}`,
+        });
+      } catch (err) {
+        console.warn(`[kanban] Failed to create proposal from marker in complete:`, err);
       }
     }
 
-    const task = await store.completeRun(id, resultText, parsed.data.error);
     return c.json(task);
   } catch (err) {
     return handleWorkflowError(c, err);
