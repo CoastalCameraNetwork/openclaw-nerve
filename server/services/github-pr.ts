@@ -6,6 +6,8 @@
 
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { invokeGatewayTool } from '../lib/gateway-client.js';
 
 const execAsync = promisify(exec);
@@ -271,19 +273,89 @@ export async function completeGitWorkflow(
 ): Promise<PRInfo> {
   // Create branch
   const branch = await createBranch(taskId, taskTitle, workingDir);
-  
+
   // Commit changes
   await commitChanges(workingDir, `${taskTitle}\n\nTask: ${taskId}\n${taskDescription?.substring(0, 200) || ''}`);
-  
+
   // Push branch
   await pushBranch(branch, workingDir);
-  
+
   // Create PR
   const pr = await createPR(
     taskTitle,
     `**Task:** ${taskId}\n\n${taskDescription || 'No description'}`,
     branch
   );
-  
+
   return pr;
+}
+
+/**
+ * Create a git worktree for isolated task execution.
+ * Worktrees are created under /tmp/nerve-worktrees/task-{taskId}-{timestamp}
+ *
+ * @param taskId - Unique task identifier
+ * @param taskTitle - Task title for reference
+ * @param baseBranch - Base branch to checkout (default: 'main')
+ * @returns Path to the created worktree
+ */
+export async function createWorktree(
+  taskId: string,
+  taskTitle: string,
+  baseBranch: string = 'main'
+): Promise<string> {
+  const worktreesDir = '/tmp/nerve-worktrees';
+  const timestamp = Date.now();
+  const worktreePath = path.join(worktreesDir, `task-${taskId}-${timestamp}`);
+
+  try {
+    // Create worktrees directory if it doesn't exist
+    await fs.promises.mkdir(worktreesDir, { recursive: true });
+
+    // Get the repository root (assuming we're already in a git repo)
+    const { stdout: repoRoot } = await execAsync('git rev-parse --show-toplevel');
+    const repoRootPath = repoRoot.trim();
+
+    // Create the worktree, checking out the base branch
+    // Using -b to create a new branch for this task
+    const branchName = `task/${taskId}`;
+    await execAsync(`git worktree add -b ${branchName} "${worktreePath}" ${baseBranch}`, {
+      cwd: repoRootPath,
+    });
+
+    console.log(`Created worktree at ${worktreePath} for task ${taskId} on branch ${branchName}`);
+    return worktreePath;
+  } catch (error) {
+    console.error(`Failed to create worktree for task ${taskId}:`, error);
+    throw new Error(`Worktree creation failed: ${(error as Error).message}`);
+  }
+}
+
+/**
+ * Clean up a git worktree after branch is pushed.
+ * Removes the worktree directory and unregisters it from git.
+ *
+ * @param worktreePath - Path to the worktree to clean up
+ */
+export async function cleanupWorktree(worktreePath: string): Promise<void> {
+  try {
+    // Get the repository root
+    const { stdout: repoRoot } = await execAsync('git rev-parse --show-toplevel');
+    const repoRootPath = repoRoot.trim();
+
+    // Remove the worktree (git worktree remove also cleans up the directory)
+    await execAsync(`git worktree remove "${worktreePath}"`, {
+      cwd: repoRootPath,
+    });
+
+    console.log(`Cleaned up worktree at ${worktreePath}`);
+  } catch (error) {
+    // If git worktree remove fails, try to remove the directory directly
+    try {
+      await fs.promises.rm(worktreePath, { recursive: true, force: true });
+      console.log(`Force removed worktree directory at ${worktreePath}`);
+    } catch (rmError) {
+      console.error(`Failed to cleanup worktree at ${worktreePath}:`, rmError);
+    }
+  }
 }

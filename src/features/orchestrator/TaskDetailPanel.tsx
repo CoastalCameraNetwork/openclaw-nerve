@@ -1,11 +1,12 @@
 /**
  * TaskDetailPanel — Detailed view of a single orchestrator task.
- * Shows execution timeline, agent outputs, audit log, and PR status.
+ * Shows execution timeline, agent outputs, audit log, PR status, and live agent chat.
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { X, Clock, CheckCircle2, AlertCircle, FileText, GitPullRequest, User, Play, Square, Loader2, Edit2, Save } from 'lucide-react';
+import { X, Clock, CheckCircle2, AlertCircle, FileText, GitPullRequest, User, Play, Square, Loader2, Edit2, Save, MessageSquare } from 'lucide-react';
 import { AGENT_AVATARS } from './OrchestratorDashboard';
+import { TaskChatPanel } from './TaskChatPanel';
 
 interface TaskHistory {
   task: {
@@ -36,8 +37,13 @@ interface TaskHistory {
   }>;
   pr?: {
     number: number;
-    url?: string;
+    url: string;
+    branch: string;
+    status: 'open' | 'closed' | 'merged' | 'draft';
     reviewComments?: number;
+    reviewPassed?: boolean;
+    criticalIssues?: number;
+    highIssues?: number;
   } | null;
 }
 
@@ -455,6 +461,15 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
             )}
           </section>
 
+          {/* Live Agent Chat */}
+          <section>
+            <h3 className="text-sm font-semibold mb-3 inline-flex items-center gap-2">
+              <MessageSquare size={16} />
+              Live Agent Chat
+            </h3>
+            <TaskChatPanel taskId={taskId} />
+          </section>
+
           {/* Agent Execution */}
           {history.agents && history.agents.length > 0 && (
             <section>
@@ -581,13 +596,30 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
           {history.pr && (
             <section>
               <h3 className="text-sm font-semibold mb-3">Pull Request</h3>
-              <div className="p-3 border rounded-lg bg-muted/30">
-                <div className="flex items-center gap-2 mb-2">
+              <div className="p-3 border rounded-lg bg-muted/30 space-y-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <GitPullRequest size={16} className="text-cyan-400" />
                   <span className="text-sm font-medium">
                     PR #{history.pr.number}
                   </span>
+                  {history.pr.status && (
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium border ${
+                      history.pr.status === 'merged' ? 'bg-green-500/20 text-green-400 border-green-500/30' :
+                      history.pr.status === 'closed' ? 'bg-red-500/20 text-red-400 border-red-500/30' :
+                      history.pr.status === 'draft' ? 'bg-gray-500/20 text-gray-400 border-gray-500/30' :
+                      'bg-cyan-500/20 text-cyan-400 border-cyan-500/30'
+                    }`}>
+                      {history.pr.status}
+                    </span>
+                  )}
                 </div>
+
+                {history.pr.branch && (
+                  <div className="text-xs text-muted-foreground">
+                    Branch: <code className="bg-muted px-1.5 py-0.5 rounded">{history.pr.branch}</code>
+                  </div>
+                )}
+
                 {history.pr.url && (
                   <a
                     href={history.pr.url}
@@ -598,9 +630,37 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
                     View on GitHub →
                   </a>
                 )}
-                {history.pr.reviewComments !== undefined && (
-                  <div className="text-xs text-muted-foreground mt-2">
-                    {history.pr.reviewComments} review comments
+
+                {/* Review Status */}
+                {(history.pr.reviewPassed !== undefined || history.pr.criticalIssues !== undefined || history.pr.highIssues !== undefined) && (
+                  <div className="pt-2 border-t">
+                    <div className="text-xs font-semibold mb-1">Review Status</div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      {history.pr.reviewPassed !== undefined && (
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                          history.pr.reviewPassed
+                            ? 'bg-green-500/20 text-green-400'
+                            : 'bg-red-500/20 text-red-400'
+                        }`}>
+                          {history.pr.reviewPassed ? '✓ PASSED' : '✗ FAILED'}
+                        </span>
+                      )}
+                      {history.pr.criticalIssues !== undefined && history.pr.criticalIssues > 0 && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-500 text-white">
+                          {history.pr.criticalIssues} critical
+                        </span>
+                      )}
+                      {history.pr.highIssues !== undefined && history.pr.highIssues > 0 && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500 text-white">
+                          {history.pr.highIssues} high
+                        </span>
+                      )}
+                      {history.pr.reviewComments !== undefined && history.pr.reviewComments > 0 && (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                          {history.pr.reviewComments} comments
+                        </span>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>

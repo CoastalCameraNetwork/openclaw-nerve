@@ -134,7 +134,7 @@ app.post('/api/orchestrator/start', rateLimitGeneral, async (c) => {
     // If execute_immediately, spawn agent sessions
     if (execute_immediately) {
       try {
-        await executeTask(kanbanTask.id, description, task.agents, task.sequence, task.gate_mode, null, task.routing.model);
+        await executeTask(kanbanTask.id, description, task.title, task.agents, task.sequence, task.gate_mode, null, task.routing.model);
         await store.executeTask(kanbanTask.id, {}, 'operator');
       } catch (execError) {
         console.error('Failed to execute task immediately:', execError);
@@ -614,6 +614,7 @@ app.post('/api/orchestrator/execute/:id', rateLimitGeneral, async (c) => {
     const result = await executeTask(
       taskId,
       task.description || task.title,
+      task.title,
       agents,
       sequence,
       gateMode,

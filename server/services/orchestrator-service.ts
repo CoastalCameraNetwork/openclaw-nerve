@@ -14,6 +14,13 @@ import {
 } from '../lib/agent-registry.js';
 import type { ProjectInfo } from '../lib/project-registry.js';
 import { invokeGatewayTool } from '../lib/gateway-client.js';
+import {
+  createWorktree,
+  cleanupWorktree,
+  completeGitWorkflow,
+  type PRInfo,
+} from './github-pr.js';
+import { runAutomatedPRReview, type PRReviewReport } from './pr-review.js';
 
 export interface OrchestratorTask {
   task_id: string;
@@ -242,17 +249,28 @@ For deployment actions:
 /**
  * Execute a task by spawning agent sessions via OpenClaw Gateway.
  * Called when a kanban task is moved to "in-progress" or executed.
+ *
+ * Full workflow:
+ * 1. Create git worktree for isolated execution
+ * 2. Spawn agent(s) to work in the worktree
+ * 3. After agents complete: commit, push, create PR
+ * 4. Run automated PR review
+ * 5. Store PR info in task metadata
  */
 export async function executeTask(
   taskId: string,
   taskDescription: string,
+  taskTitle: string, // Added title for PR creation
   agents: string[],
   sequence: 'single' | 'sequential' | 'parallel',
   gateMode?: 'audit-only' | 'gate-on-write' | 'gate-on-deploy',
   project?: ProjectInfo | null,
   model?: string // Optional model override from routing
-): Promise<{ session_labels: string[] }> {
+): Promise<{ session_labels: string[]; pr?: PRInfo; review?: PRReviewReport }> {
   const sessionLabels: string[] = [];
+  let worktreePath: string | undefined;
+  let prInfo: PRInfo | undefined;
+  let reviewReport: PRReviewReport | undefined;
 
   // Default to audit-only if not specified (backward compatibility)
   const effectiveGateMode = gateMode ?? 'audit-only';
@@ -265,62 +283,135 @@ export async function executeTask(
     ? `\n\n**Working Directory:** ${project.localPath}\n**GitHub Repo:** ${project.githubRepo || 'N/A'}\n**Project:** ${project.name}`
     : '';
 
-  if (sequence === 'parallel') {
-    // Spawn all agents in parallel
-    const promises = agents.map(async (agentName) => {
-      const label = `orch-${taskId}-${agentName}`;
-      const prompt = `${taskDescription}${projectContext}\n\n${gateInstructions}`;
-      const result = await spawnAgentSession(agentName, prompt, label, project?.localPath, model);
-      if (result.session_key) {
-        sessionLabels.push(label);
-      }
-      return result;
-    });
+  try {
+    // Phase 1: Create worktree for isolated execution (skip for audit-only mode)
+    if (effectiveGateMode !== 'audit-only' && project) {
+      // Use 'main' as default branch - projects don't specify branch in registry
+      const baseBranch = 'main';
+      worktreePath = await createWorktree(taskId, taskTitle, baseBranch);
+      console.log(`[orchestrator] Created worktree at ${worktreePath} for task ${taskId}`);
+    }
 
-    await Promise.all(promises);
-  } else {
-    // Spawn agents sequentially with structured handoff
-    const handoffs: AgentHandoff[] = [];
+    // Phase 2: Spawn agents
+    if (sequence === 'parallel') {
+      // Spawn all agents in parallel
+      const promises = agents.map(async (agentName) => {
+        const label = `orch-${taskId}-${agentName}`;
+        const prompt = `${taskDescription}${projectContext}\n\n${gateInstructions}`;
+        // Pass worktree path if available
+        const targetDir = worktreePath || project?.localPath;
+        const result = await spawnAgentSession(agentName, prompt, label, targetDir, model);
+        if (result.session_key) {
+          sessionLabels.push(label);
+        }
+        return result;
+      });
 
-    for (const agentName of agents) {
-      const label = `orch-${taskId}-${agentName}`;
+      await Promise.all(promises);
+    } else {
+      // Spawn agents sequentially with structured handoff
+      const handoffs: AgentHandoff[] = [];
 
-      // Build context from previous handoffs
-      let previousContext = '';
-      if (handoffs.length > 0) {
-        previousContext = '\\n\\n**PREVIOUS AGENT RESULTS:**\\n' +
-          handoffs.map(h => `### ${h.agent} (${h.status})
+      for (const agentName of agents) {
+        const label = `orch-${taskId}-${agentName}`;
+
+        // Build context from previous handoffs
+        let previousContext = '';
+        if (handoffs.length > 0) {
+          previousContext = '\\n\\n**PREVIOUS AGENT RESULTS:**\\n' +
+            handoffs.map(h => `### ${h.agent} (${h.status})
 Summary: ${h.summary}
 Files changed: ${h.filesChanged.join(', ') || 'none'}
 ${h.recommendations.length ? 'Recommendations: ' + h.recommendations.join('; ') : ''}
 ${h.errors.length ? 'Errors: ' + h.errors.join('; ') : ''}`
-          ).join('\\n\\n');
-      }
+            ).join('\\n\\n');
+        }
 
-      // Build prompt with handoff instruction for sequential agents
-      const basePrompt = previousContext
-        ? `${taskDescription}${previousContext}`
-        : taskDescription;
+        // Build prompt with handoff instruction for sequential agents
+        const basePrompt = previousContext
+          ? `${taskDescription}${previousContext}`
+          : taskDescription;
 
-      // Add handoff instruction only for sequential (not single)
-      const handoffPrompt = sequence === 'sequential'
-        ? `${basePrompt}${HANDOFF_INSTRUCTION}`
-        : basePrompt;
+        // Add handoff instruction only for sequential (not single)
+        const handoffPrompt = sequence === 'sequential'
+          ? `${basePrompt}${HANDOFF_INSTRUCTION}`
+          : basePrompt;
 
-      const fullPrompt = `${handoffPrompt}${projectContext}\\n\\n${gateInstructions}`;
+        const fullPrompt = `${handoffPrompt}${projectContext}\\n\\n${gateInstructions}`;
 
-      const result = await spawnAgentSession(agentName, fullPrompt, label, project?.localPath, model);
-      if (result.session_key) {
-        sessionLabels.push(label);
-        // Parse handoff for next agent
-        if (result.output) {
-          handoffs.push(parseAgentHandoff(agentName, result.output));
+        // Pass worktree path if available
+        const targetDir = worktreePath || project?.localPath;
+        const result = await spawnAgentSession(agentName, fullPrompt, label, targetDir, model);
+        if (result.session_key) {
+          sessionLabels.push(label);
+          // Parse handoff for next agent
+          if (result.output) {
+            handoffs.push(parseAgentHandoff(agentName, result.output));
+          }
         }
       }
     }
-  }
 
-  return { session_labels: sessionLabels };
+    // Phase 3: After agents complete - create branch, commit, push, PR (skip for audit-only)
+    if (worktreePath && effectiveGateMode !== 'audit-only') {
+      console.log(`[orchestrator] Running git workflow for task ${taskId}...`);
+
+      prInfo = await completeGitWorkflow(taskId, taskTitle, taskDescription, worktreePath);
+      console.log(`[orchestrator] Created PR #${prInfo.number} for task ${taskId}`);
+
+      // Phase 4: Run automated PR review
+      console.log(`[orchestrator] Running PR review for PR #${prInfo.number}...`);
+      reviewReport = await runAutomatedPRReview(taskId, prInfo.number, project?.type);
+
+      // Phase 5: Store PR info and review in task metadata
+      const store = getKanbanStore();
+      const task = await store.getTask(taskId).catch(() => null);
+
+      if (task) {
+        // Update task with PR info and review status
+        await store.updateTask(taskId, task.version, {
+          pr: {
+            number: prInfo.number,
+            url: prInfo.url,
+            branch: prInfo.branch,
+            status: prInfo.status,
+            reviewComments: reviewReport.criticalIssues + reviewReport.highIssues + reviewReport.mediumIssues + reviewReport.lowIssues,
+            reviewPassed: reviewReport.passed,
+            criticalIssues: reviewReport.criticalIssues,
+            highIssues: reviewReport.highIssues,
+          },
+          metadata: {
+            ...task.metadata,
+            prReview: reviewReport,
+          },
+        });
+        console.log(`[orchestrator] Stored PR info in task ${taskId}`);
+      }
+
+      // Phase 6: Cleanup worktree
+      await cleanupWorktree(worktreePath);
+      console.log(`[orchestrator] Cleaned up worktree for task ${taskId}`);
+    }
+
+    return {
+      session_labels: sessionLabels,
+      pr: prInfo,
+      review: reviewReport,
+    };
+  } catch (error) {
+    console.error(`[orchestrator] Error executing task ${taskId}:`, error);
+
+    // Cleanup worktree on error
+    if (worktreePath) {
+      try {
+        await cleanupWorktree(worktreePath);
+      } catch (cleanupError) {
+        console.error(`[orchestrator] Failed to cleanup worktree on error:`, cleanupError);
+      }
+    }
+
+    throw error;
+  }
 }
 
 /**

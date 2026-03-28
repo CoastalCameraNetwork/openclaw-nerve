@@ -95,6 +95,9 @@ export interface KanbanTask {
     commits?: number;
     createdAt?: number;
     updatedAt?: number;
+    reviewPassed?: boolean;
+    criticalIssues?: number;
+    highIssues?: number;
   };
 }
 
