@@ -46,6 +46,15 @@ export interface TTSVoiceConfig {
     /** Voice name (e.g. en-US-AriaNeural, en-GB-SoniaNeural) */
     voice: string;
   };
+  /** Xiaomi MiMo TTS settings */
+  xiaomi: {
+    /** Xiaomi model name */
+    model: string;
+    /** Built-in Xiaomi voice name */
+    voice: string;
+    /** Optional default Xiaomi style prompt */
+    style: string;
+  };
 }
 
 const DEFAULTS: TTSVoiceConfig = {
@@ -64,6 +73,11 @@ const DEFAULTS: TTSVoiceConfig = {
   },
   edge: {
     voice: 'en-US-AriaNeural',
+  },
+  xiaomi: {
+    model: 'mimo-v2-tts',
+    voice: 'mimo_default',
+    style: '',
   },
 };
 

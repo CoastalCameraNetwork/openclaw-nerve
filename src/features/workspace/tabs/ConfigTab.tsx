@@ -5,8 +5,11 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { RefreshCw, Pencil, Save, X, CheckCircle, AlertCircle } from 'lucide-react';
 import { InlineSelect } from '@/components/ui/InlineSelect';
+import { Button } from '@/components/ui/button';
 import { useWorkspaceFile } from '../hooks/useWorkspaceFile';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { getWorkspaceStorageKey } from '../workspaceScope';
+import { clearPersistedDraft, readPersistedDraft, writePersistedDraft } from '../persistedDrafts';
 
 const FILE_OPTIONS = [
   { key: 'soul', label: 'SOUL.md' },
@@ -17,19 +20,76 @@ const FILE_OPTIONS = [
   { key: 'heartbeat', label: 'HEARTBEAT.md' },
 ];
 
+const DEFAULT_CONFIG_KEY = 'soul';
+
+function getSelectedConfigStorageKey(agentId: string): string {
+  return getWorkspaceStorageKey('config:selected-file', agentId);
+}
+
+function getInitialSelectedKey(agentId: string): string {
+  try {
+    const stored = localStorage.getItem(getSelectedConfigStorageKey(agentId));
+    if (stored && FILE_OPTIONS.some(file => file.key === stored)) {
+      return stored;
+    }
+  } catch {
+    // ignore storage errors
+  }
+
+  return DEFAULT_CONFIG_KEY;
+}
+
+function getConfigDraftKind(fileKey: string): string {
+  return `config-editor:${fileKey}`;
+}
+
+interface ConfigTabProps {
+  agentId: string;
+}
+
 /** Workspace tab displaying an editable agent config file (YAML/TOML). */
-export function ConfigTab() {
-  const [selectedKey, setSelectedKey] = useState('soul');
-  const { content, isLoading, error, exists, load, save } = useWorkspaceFile();
-  const [editing, setEditing] = useState(false);
-  const [editContent, setEditContent] = useState('');
+export function ConfigTab({ agentId }: ConfigTabProps) {
+  const [selectedKey, setSelectedKey] = useState(() => getInitialSelectedKey(agentId));
+  const { content, isLoading, error, exists, load, save } = useWorkspaceFile(agentId);
+  const initialDraft = readPersistedDraft<string>(getConfigDraftKind(getInitialSelectedKey(agentId)), agentId);
+  const [editing, setEditing] = useState(() => initialDraft !== null);
+  const [editContent, setEditContent] = useState(() => initialDraft ?? '');
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [pendingSwitchKey, setPendingSwitchKey] = useState<string | null>(null);
   const feedbackTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  const draftKind = getConfigDraftKind(selectedKey);
+  const clearDraft = useCallback((fileKey = selectedKey) => {
+    clearPersistedDraft(getConfigDraftKind(fileKey), agentId);
+  }, [agentId, selectedKey]);
+
   // Clean up feedback timer on unmount
   useEffect(() => () => clearTimeout(feedbackTimer.current), []);
+
+  useEffect(() => {
+    setSelectedKey(getInitialSelectedKey(agentId));
+  }, [agentId]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(getSelectedConfigStorageKey(agentId), selectedKey);
+    } catch {
+      // ignore storage errors
+    }
+  }, [agentId, selectedKey]);
+
+  useEffect(() => {
+    const storedDraft = readPersistedDraft<string>(draftKind, agentId);
+    if (storedDraft !== null) {
+      setEditContent(storedDraft);
+      setEditing(true);
+      return;
+    }
+
+    setEditContent('');
+    setEditing(false);
+  }, [agentId, draftKind]);
 
   // Load file when key changes. Reset editing by keying on selectedKey.
   const loadFile = useCallback(() => {
@@ -40,6 +100,20 @@ export function ConfigTab() {
     loadFile();
   }, [loadFile]);
 
+  useEffect(() => {
+    if (!editing) {
+      clearDraft();
+      return;
+    }
+
+    if (editContent === (content ?? '')) {
+      clearDraft();
+      return;
+    }
+
+    writePersistedDraft(draftKind, agentId, editContent);
+  }, [agentId, clearDraft, content, draftKind, editContent, editing]);
+
   const showFeedback = useCallback((type: 'success' | 'error', message: string) => {
     clearTimeout(feedbackTimer.current);
     setFeedback({ type, message });
@@ -47,31 +121,37 @@ export function ConfigTab() {
   }, []);
 
   const handleEdit = useCallback(() => {
-    setEditContent(content || '');
+    const storedDraft = readPersistedDraft<string>(draftKind, agentId);
+    setEditContent(storedDraft ?? content ?? '');
     setEditing(true);
     // Focus textarea after render
     setTimeout(() => textareaRef.current?.focus(), 50);
-  }, [content]);
+  }, [agentId, content, draftKind]);
 
   const handleSave = useCallback(async () => {
-    const success = await save(selectedKey, editContent);
-    if (success) {
+    const result = await save(selectedKey, editContent);
+    if (result === 'saved') {
+      clearDraft();
       showFeedback('success', 'File saved');
       setEditing(false);
-    } else {
+      return;
+    }
+
+    if (result === 'error') {
       showFeedback('error', 'Failed to save');
     }
-  }, [selectedKey, editContent, save, showFeedback]);
+  }, [clearDraft, selectedKey, editContent, save, showFeedback]);
 
   const handleCancel = useCallback(() => {
+    clearDraft();
     setEditing(false);
-  }, []);
+  }, [clearDraft]);
 
   const handleCreate = useCallback(async () => {
     const label = FILE_OPTIONS.find(f => f.key === selectedKey)?.label || selectedKey;
     const template = `# ${label}\n\n`;
-    const success = await save(selectedKey, template);
-    if (success) {
+    const result = await save(selectedKey, template);
+    if (result === 'saved') {
       showFeedback('success', 'File created');
     }
   }, [selectedKey, save, showFeedback]);
@@ -88,37 +168,39 @@ export function ConfigTab() {
 
   return (
     <div className="h-full flex flex-col min-h-0">
-      <div className="flex items-center border-b border-border/40">
-        <div className="flex-1 px-2 py-1">
+      <div className="flex items-center gap-2 border-b border-border/60 bg-gradient-to-r from-secondary/84 to-card/80 px-3 py-3">
+        <div className="min-w-0 flex-1">
           <InlineSelect
             inline
             value={selectedKey}
-            onChange={(v) => {
+            onChange={(value) => {
               if (editing) {
-                setPendingSwitchKey(v);
+                setPendingSwitchKey(value);
                 return;
               }
-              setSelectedKey(v);
+              setSelectedKey(value);
               setEditing(false);
             }}
-            options={FILE_OPTIONS.map(f => ({ value: f.key, label: f.label }))}
+            options={FILE_OPTIONS.map(file => ({ value: file.key, label: file.label }))}
             ariaLabel="Select config file"
+            triggerClassName="min-h-10 w-full justify-between rounded-2xl border-border/80 bg-background/65 px-3 py-2 text-sm font-sans text-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]"
+            menuClassName="rounded-2xl border-border/80 bg-card/98 p-1 shadow-[0_20px_48px_rgba(0,0,0,0.28)]"
           />
         </div>
         <button
           onClick={() => load(selectedKey)}
           disabled={isLoading}
-          className="shrink-0 px-2 py-1.5 bg-transparent border-0 text-muted-foreground hover:text-foreground disabled:opacity-50 transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-purple/50 focus-visible:ring-offset-0"
+          className="shell-icon-button size-10 shrink-0 px-0 disabled:cursor-not-allowed disabled:opacity-50"
           title="Refresh"
           aria-label="Refresh file"
         >
-          <RefreshCw size={10} className={isLoading ? 'animate-spin' : ''} />
+          <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''} />
         </button>
       </div>
 
       {/* Feedback toast */}
       {feedback && (
-        <div className={`px-3 py-1.5 text-[10px] flex items-center gap-1.5 border-b ${
+        <div className={`px-3 py-1.5 text-[0.667rem] flex items-center gap-1.5 border-b ${
           feedback.type === 'success'
             ? 'bg-green/10 text-green border-green/20'
             : 'bg-red/10 text-red border-red/20'
@@ -129,35 +211,35 @@ export function ConfigTab() {
       )}
 
       {error && (
-        <div className="px-3 py-2 text-[10px] text-red bg-red/10">{error}</div>
+        <div className="px-3 py-2 text-[0.667rem] text-red bg-red/10">{error}</div>
       )}
 
       <div className="flex-1 overflow-y-auto">
         {!exists && !isLoading && !error && (
-          <div className="text-muted-foreground px-3 py-4 text-[11px] text-center">
+          <div className="text-muted-foreground px-3 py-4 text-[0.733rem] text-center">
             <p>File does not exist yet</p>
             <button
               onClick={handleCreate}
-              className="mt-2 text-purple hover:underline bg-transparent border-0 cursor-pointer text-[11px] focus-visible:ring-2 focus-visible:ring-purple/50 focus-visible:ring-offset-0 rounded-sm"
+              className="mt-2 text-purple hover:underline bg-transparent border-0 cursor-pointer text-[0.733rem] focus-visible:ring-2 focus-visible:ring-purple/50 focus-visible:ring-offset-0 rounded-sm"
             >
-              Create {FILE_OPTIONS.find(f => f.key === selectedKey)?.label}
+              Create {FILE_OPTIONS.find(file => file.key === selectedKey)?.label}
             </button>
           </div>
         )}
 
         {exists && !editing && content !== null && (
           <div className="relative">
-            <div className="absolute top-1 right-1 z-10">
+            <div className="absolute top-2 right-2 z-10">
               <button
                 onClick={handleEdit}
-                className="bg-transparent border border-border/60 text-muted-foreground w-6 h-6 cursor-pointer flex items-center justify-center hover:text-purple hover:border-purple transition-colors focus-visible:ring-2 focus-visible:ring-purple/50 focus-visible:ring-offset-0"
+                className="shell-icon-button size-9 px-0"
                 title="Edit"
                 aria-label="Edit file"
               >
-                <Pencil size={10} />
+                <Pencil size={14} />
               </button>
             </div>
-            <pre className="px-3 py-2 text-[11px] text-foreground whitespace-pre-wrap font-mono leading-relaxed">
+            <pre className="px-3 py-2 text-[0.733rem] text-foreground whitespace-pre-wrap break-words [overflow-wrap:anywhere] font-mono leading-relaxed">
               {content}
             </pre>
           </div>
@@ -169,23 +251,27 @@ export function ConfigTab() {
               ref={textareaRef}
               value={editContent}
               onChange={e => setEditContent(e.target.value)}
-              className="flex-1 w-full px-3 py-2 text-[11px] font-mono bg-background text-foreground border-0 resize-none outline-none focus-visible:ring-2 focus-visible:ring-purple/50 focus-visible:ring-offset-0 focus-visible:ring-inset"
+              className="flex-1 w-full whitespace-pre-wrap break-words [overflow-wrap:anywhere] px-3 py-2 text-[0.733rem] font-mono bg-background text-foreground border-0 resize-none outline-none focus-visible:ring-2 focus-visible:ring-purple/50 focus-visible:ring-offset-0 focus-visible:ring-inset"
               spellCheck={false}
+              wrap="soft"
             />
-            <div className="flex items-center gap-1 px-3 py-1.5 border-t border-border/40">
-              <button
+            <div className="flex items-center gap-2 border-t border-border/60 bg-secondary/28 px-3 py-2">
+              <Button
                 onClick={handleSave}
                 disabled={isLoading}
-                className="bg-transparent border border-purple/60 text-purple text-[10px] px-2 py-1 cursor-pointer flex items-center gap-1 hover:bg-purple/10 transition-colors disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-purple/50 focus-visible:ring-offset-0"
+                size="sm"
+                className="text-[0.733rem] uppercase tracking-[0.12em]"
               >
-                <Save size={10} /> Save
-              </button>
-              <button
+                <Save size={12} /> Save
+              </Button>
+              <Button
                 onClick={handleCancel}
-                className="bg-transparent border border-border/60 text-muted-foreground text-[10px] px-2 py-1 cursor-pointer flex items-center gap-1 hover:text-foreground transition-colors focus-visible:ring-2 focus-visible:ring-purple/50 focus-visible:ring-offset-0"
+                variant="outline"
+                size="sm"
+                className="text-[0.733rem] uppercase tracking-[0.12em]"
               >
-                <X size={10} /> Cancel
-              </button>
+                <X size={12} /> Cancel
+              </Button>
             </div>
           </div>
         )}
@@ -198,6 +284,7 @@ export function ConfigTab() {
         confirmLabel="Discard"
         cancelLabel="Cancel"
         onConfirm={() => {
+          clearDraft();
           if (pendingSwitchKey) {
             setSelectedKey(pendingSwitchKey);
             setEditing(false);

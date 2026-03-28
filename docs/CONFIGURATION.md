@@ -9,7 +9,7 @@ Nerve is configured via a `.env` file in the project root. All variables have se
 The interactive setup wizard is the recommended way to configure Nerve:
 
 ```bash
-npm run setup               # Interactive setup (5 steps)
+npm run setup               # Interactive setup (6 steps)
 npm run setup -- --check    # Validate existing config & test gateway
 npm run setup -- --defaults # Non-interactive with auto-detected values
 npm run setup -- --help     # Show help
@@ -17,7 +17,7 @@ npm run setup -- --help     # Show help
 
 ### Wizard Steps
 
-The wizard walks through **5 sections**:
+The wizard walks through **6 sections**:
 
 #### 1. Gateway Connection
 
@@ -43,21 +43,30 @@ Determines how you'll access Nerve. The wizard auto-configures `HOST`, `ALLOWED_
 | Mode | Bind | Description |
 |------|------|-------------|
 | **Localhost** | `127.0.0.1` | Only accessible from this machine. Safest option. |
-| **Tailscale** | `0.0.0.0` | Accessible from your Tailscale network. Auto-detected if Tailscale is running. Sets CORS + CSP for your Tailscale IP. |
+| **Tailscale IP** | `0.0.0.0` | Accessible from your Tailscale network over the machine's tailnet IP. Sets CORS + CSP for that IP. |
+| **Tailscale Serve** | `127.0.0.1` | Keeps Nerve loopback-only and exposes it through a Tailscale Serve HTTPS hostname when available. |
 | **Network (LAN)** | `0.0.0.0` | Accessible from your local network. Prompts for your LAN IP. Sets CORS + CSP for that IP. |
 | **Custom** | Manual | Full manual control: custom port, bind address, HTTPS certificate generation, CORS. |
 
 **HTTPS (Custom mode only):** The wizard can generate self-signed certificates via `openssl` and configure `SSL_PORT`.
 
-#### 4. TTS Configuration (Optional)
+#### 4. Authentication
+
+If you choose a network-exposed mode, the wizard prompts you to enable auth and either:
+- set a password, or
+- reuse the gateway token as the password fallback
+
+For localhost-only installs, auth can stay off.
+
+#### 5. TTS Configuration (Optional)
 
 Prompts for optional API keys:
-- `OPENAI_API_KEY` — enables OpenAI TTS + Whisper transcription
-- `REPLICATE_API_TOKEN` — enables Qwen TTS via Replicate (warns if `ffmpeg` is missing)
+- `OPENAI_API_KEY`, enables OpenAI TTS + Whisper transcription
+- `REPLICATE_API_TOKEN`, enables Qwen TTS via Replicate (warns if `ffmpeg` is missing)
 
-Edge TTS always works without any keys.
+Edge TTS always works without any keys. Xiaomi MiMo can be enabled later by setting `MIMO_API_KEY` manually or saving it from Settings, Audio.
 
-#### 5. Advanced Settings (Optional)
+#### 6. Advanced Settings (Optional)
 
 Custom file paths for `MEMORY_PATH`, `MEMORY_DIR`, `SESSIONS_DIR`. Most users skip this.
 
@@ -68,6 +77,8 @@ Custom file paths for `MEMORY_PATH`, `MEMORY_DIR`, `SESSIONS_DIR`. Most users sk
 | *(none)* | Full interactive wizard. If `.env` exists, asks whether to update or start fresh. |
 | `--check` | Validates all config values, tests gateway connectivity, and exits. Non-destructive. |
 | `--defaults` | Auto-detects gateway token, applies defaults for everything else, writes `.env`. No prompts. |
+| `--defaults --access-mode tailscale-ip` | Non-interactive setup for direct tailnet IP access. |
+| `--defaults --access-mode tailscale-serve` | Non-interactive setup for loopback + Tailscale Serve HTTPS access. |
 
 The wizard backs up existing `.env` files (e.g. `.env.bak.1708100000000`) before overwriting and applies `chmod 600` to both `.env` and backup files.
 
@@ -85,7 +96,7 @@ The wizard backs up existing `.env` files (e.g. `.env.bak.1708100000000`) before
 
 > **⚠️ Network exposure:** Setting `HOST=0.0.0.0` exposes all endpoints to the network. Enable authentication (`NERVE_AUTH=true`) and set a password via the setup wizard before binding to a non-loopback address. Without auth, anyone with network access can read/write agent memory, modify config files, and control sessions. See [Security](SECURITY.md) for the full threat model.
 
-```env
+```bash
 PORT=3080
 SSL_PORT=3443
 HOST=127.0.0.1
@@ -98,10 +109,20 @@ HOST=127.0.0.1
 | `GATEWAY_TOKEN` | — | **Yes** | Authentication token for the OpenClaw gateway. The setup wizard auto-detects this. See note below |
 | `GATEWAY_URL` | `http://127.0.0.1:18789` | No | Gateway HTTP endpoint URL |
 
-```env
+```bash
 GATEWAY_TOKEN=your-token-here
 GATEWAY_URL=http://127.0.0.1:18789
 ```
+
+### Token Injection
+
+Nerve performs **server-side token injection**. When a connection is established through the WebSocket proxy, Nerve automatically injects the configured `GATEWAY_TOKEN` into the connection request if the client is considered **trusted**.
+
+**Trust is granted if:**
+1. The connection is from a **local loopback address** (`127.0.0.1` or `::1`), accounting for `X-Forwarded-For` and `X-Real-IP` when behind a trusted proxy (see `TRUSTED_PROXIES`).
+2. OR, the connection has a valid **authenticated session** (`NERVE_AUTH=true`).
+
+This allows the browser UI to connect without having to manually enter or store the gateway token in the browser's persistent storage. If a connection is not trusted (e.g., remote access without authentication), the token field in the UI must be filled manually.
 
 > **Note:** `OPENCLAW_GATEWAY_TOKEN` is also accepted as a fallback for `GATEWAY_TOKEN`.
 >
@@ -113,7 +134,7 @@ GATEWAY_URL=http://127.0.0.1:18789
 |----------|---------|-------------|
 | `AGENT_NAME` | `Agent` | Display name shown in the UI header and server info |
 
-```env
+```bash
 AGENT_NAME=Friday
 ```
 
@@ -123,16 +144,20 @@ AGENT_NAME=Friday
 |----------|-------------|
 | `OPENAI_API_KEY` | Enables OpenAI TTS (multiple voices) and Whisper audio transcription |
 | `REPLICATE_API_TOKEN` | Enables Replicate-hosted TTS models (e.g. Qwen TTS). Requires `ffmpeg` for WAV→MP3 |
+| `MIMO_API_KEY` | Enables Xiaomi MiMo TTS when the Xiaomi provider is selected in Settings, Audio |
 
-```env
+```bash
 OPENAI_API_KEY=sk-...
 REPLICATE_API_TOKEN=r8_...
+MIMO_API_KEY=sk-mimo-...
 ```
 
 TTS provider fallback chain (when no explicit provider is requested):
 1. **OpenAI** — if `OPENAI_API_KEY` is set
 2. **Replicate** — if `REPLICATE_API_TOKEN` is set
 3. **Edge TTS** — always available, no API key needed (default for new installs)
+
+Xiaomi MiMo is available as an explicit provider option when `MIMO_API_KEY` is set. It is not part of the automatic fallback chain.
 
 ### Speech-to-Text (STT)
 
@@ -144,7 +169,7 @@ TTS provider fallback chain (when no explicit provider is requested):
 | `NERVE_LANGUAGE` | `en` | Preferred voice language (ISO 639-1). Legacy `LANGUAGE` is still accepted but deprecated |
 | `EDGE_VOICE_GENDER` | `female` | Edge TTS voice gender: `female` or `male` |
 
-```env
+```bash
 # Use local speech-to-text (no API key needed)
 STT_PROVIDER=local
 WHISPER_MODEL=tiny
@@ -168,7 +193,7 @@ Voice phrase overrides (stop/cancel/wake words) are stored at `~/.nerve/voice-ph
 | `WS_ALLOWED_HOSTS` | `localhost,127.0.0.1,::1` | Additional WebSocket proxy allowed hostnames, comma-separated |
 | `TRUSTED_PROXIES` | `127.0.0.1,::1,::ffff:127.0.0.1` | IP addresses trusted to set `X-Forwarded-For` / `X-Real-IP` headers, comma-separated |
 
-```env
+```bash
 # Tailscale example
 ALLOWED_ORIGINS=http://100.64.0.5:3080
 CSP_CONNECT_EXTRA=http://100.64.0.5:3080 ws://100.64.0.5:3080
@@ -177,6 +202,8 @@ WS_ALLOWED_HOSTS=100.64.0.5
 # Behind nginx reverse proxy
 TRUSTED_PROXIES=127.0.0.1,::1,10.0.0.1
 ```
+
+If you are retrofitting Tailscale onto an existing install, see [Add Tailscale to an Existing Nerve Install](TAILSCALE.md).
 
 ### Authentication
 
@@ -189,7 +216,7 @@ Nerve includes a built-in authentication layer that protects all API endpoints, 
 | `NERVE_SESSION_SECRET` | *(auto-generated)* | 32-byte hex string for HMAC-SHA256 cookie signing. Auto-generated during setup. If not set, an ephemeral secret is generated at startup (sessions won't survive restarts) |
 | `NERVE_SESSION_TTL` | `2592000000` (30 days) | Session lifetime in milliseconds |
 
-```env
+```bash
 NERVE_AUTH=true
 NERVE_PASSWORD_HASH=<generated-by-setup>
 NERVE_SESSION_SECRET=<generated-by-setup>
@@ -199,13 +226,13 @@ NERVE_SESSION_SECRET=<generated-by-setup>
 
 When `HOST=0.0.0.0` and `NERVE_AUTH=false`, the server **refuses to start** to prevent accidentally exposing all endpoints without authentication. Set `NERVE_ALLOW_INSECURE=true` to override this safety check. **Not recommended for production.**
 
-```env
+```bash
 NERVE_ALLOW_INSECURE=true
 ```
 
 **Quick enable (with gateway token as password):**
 
-```env
+```bash
 NERVE_AUTH=true
 NERVE_SESSION_SECRET=$(openssl rand -hex 32)
 # No NERVE_PASSWORD_HASH needed — your GATEWAY_TOKEN works as the password
@@ -229,7 +256,7 @@ Override these for proxies, self-hosted endpoints, or API-compatible alternative
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
 | `REPLICATE_BASE_URL` | `https://api.replicate.com/v1` | Replicate API base URL |
 
-```env
+```bash
 OPENAI_BASE_URL=https://api.openai.com/v1
 REPLICATE_BASE_URL=https://api.replicate.com/v1
 ```
@@ -243,19 +270,23 @@ REPLICATE_BASE_URL=https://api.replicate.com/v1
 ### File Paths
 
 | Variable | Default | Description |
-|----------|---------|-------------|
-| `MEMORY_PATH` | `~/.openclaw/workspace/MEMORY.md` | Path to the agent's long-term memory file |
-| `MEMORY_DIR` | `~/.openclaw/workspace/memory/` | Directory for daily memory files (`YYYY-MM-DD.md`) |
+|---------|---------|-------------|
+| `FILE_BROWSER_ROOT` | `""` (disabled) | If set, overrides the file browser root directory for all sessions. In this mode, file-browser `agentId` scoping is bypassed, default exclusion rules are disabled, and delete operations are permanent (no `.trash` recovery). |
+| `MEMORY_PATH` | `~/.openclaw/workspace/MEMORY.md` | Path to the main agent's long-term memory file |
+| `MEMORY_DIR` | `~/.openclaw/workspace/memory/` | Directory for the main agent's daily memory files (`YYYY-MM-DD.md`) |
 | `SESSIONS_DIR` | `~/.openclaw/agents/main/sessions/` | Session transcript directory (scanned for token usage) |
 | `USAGE_FILE` | `~/.openclaw/token-usage.json` | Persistent cumulative token usage data |
 | `NERVE_VOICE_PHRASES_PATH` | `~/.nerve/voice-phrases.json` | Override location for per-language voice phrase overrides |
+| `NERVE_WATCH_WORKSPACE_RECURSIVE` | `false` | Re-enables recursive `fs.watch` for full workspace `file.changed` SSE events outside `MEMORY.md` and `memory/`. Disabled by default to prevent Linux inotify `ENOSPC` watcher exhaustion. Memory watchers stay enabled for discovered agent workspaces even when this is `false`. |
 | `WORKSPACE_ROOT` | *(auto-detected)* | Allowed base directory for git workdir registration. Auto-derived from `git worktree list` or parent of `process.cwd()` |
 
-```env
+```bash
+FILE_BROWSER_ROOT=/home/user
 MEMORY_PATH=/custom/path/MEMORY.md
 MEMORY_DIR=/custom/path/memory/
 SESSIONS_DIR=/custom/path/sessions/
 NERVE_VOICE_PHRASES_PATH=/custom/path/voice-phrases.json
+NERVE_WATCH_WORKSPACE_RECURSIVE=false
 ```
 
 ### TTS Cache
@@ -265,7 +296,7 @@ NERVE_VOICE_PHRASES_PATH=/custom/path/voice-phrases.json
 | `TTS_CACHE_TTL_MS` | `3600000` (1 hour) | Time-to-live for cached TTS audio in milliseconds |
 | `TTS_CACHE_MAX` | `200` | Maximum number of cached TTS entries (in-memory LRU) |
 
-```env
+```bash
 TTS_CACHE_TTL_MS=7200000
 TTS_CACHE_MAX=500
 ```
@@ -291,7 +322,7 @@ The updater stores state in `~/.nerve/updater/`. These are not configurable via 
 
 ## Kanban
 
-Kanban board configuration is stored in the data file (`server/data/kanban/tasks.json`), not in `.env`. Manage it via the REST API:
+Kanban board configuration is stored in the runtime data file (`${NERVE_DATA_DIR:-~/.nerve}/kanban/tasks.json`), not in `.env`. Manage it via the REST API:
 
 ```bash
 # Read current config
@@ -368,7 +399,7 @@ Or use the setup wizard's Custom access mode, which generates them automatically
 
 ## Minimal `.env` Example
 
-```env
+```bash
 GATEWAY_TOKEN=abc123def456
 ```
 
@@ -376,7 +407,7 @@ Everything else uses defaults. This is sufficient for local-only usage.
 
 ## Full `.env` Example
 
-```env
+```bash
 # Gateway (required)
 GATEWAY_TOKEN=abc123def456
 GATEWAY_URL=http://127.0.0.1:18789
@@ -396,6 +427,7 @@ NERVE_SESSION_TTL=2592000000
 # API Keys
 OPENAI_API_KEY=sk-...
 REPLICATE_API_TOKEN=r8_...
+MIMO_API_KEY=sk-mimo-...
 
 # Speech / Language
 STT_PROVIDER=local

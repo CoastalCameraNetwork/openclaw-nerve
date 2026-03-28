@@ -1,6 +1,6 @@
 /** Tests for the MarkdownRenderer component. */
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 
 // Mock highlight.js to avoid complex setup
 vi.mock('@/lib/highlight', () => ({
@@ -50,6 +50,14 @@ describe('MarkdownRenderer', () => {
 
   it('renders unordered lists', () => {
     render(<MarkdownRenderer content={'- Item 1\n- Item 2\n- Item 3'} />);
+    expect(document.querySelector('ul')).toBeTruthy();
+    const items = document.querySelectorAll('li');
+    expect(items).toHaveLength(3);
+  });
+
+  it('renders ordered lists', () => {
+    render(<MarkdownRenderer content={'1. First\n2. Second\n3. Third'} />);
+    expect(document.querySelector('ol')).toBeTruthy();
     const items = document.querySelectorAll('li');
     expect(items).toHaveLength(3);
   });
@@ -59,6 +67,26 @@ describe('MarkdownRenderer', () => {
     const link = document.querySelector('a');
     expect(link).toBeTruthy();
     expect(link?.getAttribute('href')).toBe('https://example.com');
+  });
+
+  it('opens workspace links in-app when a handler is provided', () => {
+    const onOpenWorkspacePath = vi.fn();
+    render(<MarkdownRenderer content="[notes](docs/todo.md)" onOpenWorkspacePath={onOpenWorkspacePath} />);
+
+    fireEvent.click(screen.getByRole('link', { name: 'notes' }));
+
+    expect(onOpenWorkspacePath).toHaveBeenCalledWith('docs/todo.md');
+  });
+
+  it('keeps external links as normal browser links when a handler is provided', () => {
+    const onOpenWorkspacePath = vi.fn();
+    render(<MarkdownRenderer content="[example](https://example.com)" onOpenWorkspacePath={onOpenWorkspacePath} />);
+
+    const link = screen.getByRole('link', { name: 'example' });
+    expect(link).toHaveAttribute('target', '_blank');
+
+    fireEvent.click(link);
+    expect(onOpenWorkspacePath).not.toHaveBeenCalled();
   });
 
   it('renders code blocks', () => {

@@ -33,6 +33,16 @@ interface ChatPanelProps {
   loadMore?: () => boolean;
   /** Whether there are older messages to load */
   hasMore?: boolean;
+  /** Mobile file browser toggle handler */
+  onToggleFileBrowser?: () => void;
+  /** Whether the mobile file browser is currently collapsed. */
+  isFileBrowserCollapsed?: boolean;
+  /** Mobile top bar toggle handler. */
+  onToggleMobileTopBar?: () => void;
+  /** Whether the mobile top bar is currently hidden. */
+  isMobileTopBarHidden?: boolean;
+  /** Open or reveal a safe workspace path in the file explorer/editor. */
+  onOpenWorkspacePath?: (path: string) => void | Promise<void>;
 }
 
 export interface ChatPanelHandle {
@@ -46,7 +56,9 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
   processingStage,
   lastEventTimestamp = 0, currentToolDescription = null, activityLog = [],
   onWakeWordState, onReset, searchOpen, onSearchClose, id, agentName = 'Agent',
-  loadMore, hasMore = false,
+  loadMore, hasMore = false, onToggleFileBrowser, isFileBrowserCollapsed = true,
+  onToggleMobileTopBar, isMobileTopBarHidden = false,
+  onOpenWorkspacePath,
 }, ref) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const messageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -165,7 +177,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
         setAutoScroll(false);
       }
     }
-  }, [search.currentMatch, search.currentMatchIndex, collapsed]);
+  }, [search.currentMatch, search.currentMatchIndex, collapsed, messages]);
 
   // Track unread messages when scrolled up
   useEffect(() => {
@@ -228,6 +240,10 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
         onReset={onReset}
         onAbort={onAbort}
         isGenerating={isGenerating}
+        onToggleFileBrowser={onToggleFileBrowser}
+        isFileBrowserCollapsed={isFileBrowserCollapsed}
+        onToggleMobileTopBar={onToggleMobileTopBar}
+        isMobileTopBarHidden={isMobileTopBarHidden}
       />
 
       {/* Search Bar */}
@@ -253,7 +269,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
       >
         {/* Infinite scroll sentinel + "load more" indicator */}
         {hasMore && (
-          <div ref={sentinelRef} className="flex items-center justify-center py-2 text-muted-foreground/60 text-[10px] tracking-widest uppercase select-none">
+          <div ref={sentinelRef} className="flex items-center justify-center py-2 text-muted-foreground/60 text-[0.667rem] tracking-widest uppercase select-none">
             ↑ older messages
           </div>
         )}
@@ -316,6 +332,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, ChatPanelProps>(function Ch
                 searchQuery={search.query}
                 isCurrentMatch={isCurrentMatch}
                 agentName={agentName}
+                onOpenWorkspacePath={onOpenWorkspacePath}
               />
             </div>
           );

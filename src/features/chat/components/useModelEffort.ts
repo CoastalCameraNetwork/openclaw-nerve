@@ -35,7 +35,12 @@ function getEffortKey(sessionKey?: string | null) {
 type EffortLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 const EFFORT_OPTIONS: EffortLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 
-type GatewayModelInfo = { id: string; label: string; provider: string };
+export type GatewayModelInfo = { id: string; label: string; provider: string };
+
+type GatewayModelsResponse = {
+  models: GatewayModelInfo[];
+  error: string | null;
+};
 
 /** Extract the base model name from a "provider/model" ref. */
 function baseModelName(ref: string): string {
@@ -57,18 +62,43 @@ function resolveModelId(raw: string, options: GatewayModelInfo[]): string {
   return raw;
 }
 
-const FALLBACK_MODELS: GatewayModelInfo[] = [
-  { id: 'anthropic/claude-opus-4-6', label: 'claude-opus-4-6', provider: 'anthropic' },
-  { id: 'anthropic/claude-sonnet-4-5', label: 'claude-sonnet-4-5', provider: 'anthropic' },
-  { id: 'anthropic/claude-haiku-4-5', label: 'claude-haiku-4-5', provider: 'anthropic' },
-];
+export function buildSelectableModelList(
+  gatewayModels: GatewayModelInfo[] | null,
+  currentModel: string | null | undefined,
+): GatewayModelInfo[] {
+  const list = [...(gatewayModels || [])];
 
-async function fetchGatewayModels(): Promise<GatewayModelInfo[] | null> {
+  if (currentModel && currentModel !== '--' && !list.some((m) => m.id === currentModel || m.label === currentModel)) {
+    const base = baseModelName(currentModel);
+    const hasSameBase = list.some((m) => baseModelName(m.id) === base);
+    if (!hasSameBase) {
+      list.push({
+        id: currentModel,
+        label: baseModelName(currentModel),
+        provider: currentModel.includes('/') ? currentModel.split('/', 1)[0] : 'unknown',
+      });
+    }
+  }
+
+  const byId = new Map<string, GatewayModelInfo>();
+  for (const m of list) byId.set(m.id, m);
+  return Array.from(byId.values());
+}
+
+export function buildModelCatalogUiError(models: GatewayModelInfo[] | null, error: string | null | undefined): string | null {
+  if ((models?.length || 0) > 0) return null;
+  return error || null;
+}
+
+async function fetchGatewayModels(): Promise<GatewayModelsResponse | null> {
   try {
     const res = await fetch('/api/gateway/models');
     if (!res.ok) return null;
-    const data = (await res.json()) as { models?: GatewayModelInfo[] };
-    return Array.isArray(data.models) ? data.models : null;
+    const data = (await res.json()) as { models?: GatewayModelInfo[]; error?: string | null };
+    return {
+      models: Array.isArray(data.models) ? data.models : [],
+      error: typeof data.error === 'string' ? data.error : null,
+    };
   } catch {
     return null;
   }
@@ -110,32 +140,6 @@ export function useModelEffort(): UseModelEffortReturn {
   // Track pending confirmation timers so we can clean them up
   const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const modelOptionsList = useMemo(() => {
-    const models = (gatewayModels && gatewayModels.length > 0) ? gatewayModels : FALLBACK_MODELS;
-    const list = [...models];
-
-    // Add the gateway's reported model to the list if it isn't already present.
-    // BUT: don't add it if an available model with the same base name already
-    // exists under a different provider — that would create a phantom option
-    // that fails when selected (e.g. "openai-codex/gpt-5.2-codex" when only
-    // "openai/gpt-5.2-codex" has auth).
-    if (model && model !== '--' && !list.some((m) => m.id === model || m.label === model)) {
-      const base = baseModelName(model);
-      const hasSameBase = list.some((m) => baseModelName(m.id) === base);
-      if (!hasSameBase) {
-        list.push({
-          id: model,
-          label: model.includes('/') ? model.split('/', 2)[1] : model,
-          provider: model.includes('/') ? model.split('/', 1)[0] : 'unknown',
-        });
-      }
-    }
-
-    const byId = new Map<string, GatewayModelInfo>();
-    for (const m of list) byId.set(m.id, m);
-    return Array.from(byId.values()).sort((a, b) => a.id.localeCompare(b.id));
-  }, [gatewayModels, model]);
-
   const [selectedModel, setSelectedModel] = useState<string>(model || '--');
   const [prevModelSource, setPrevModelSource] = useState<string | null>(null);
 
@@ -143,6 +147,19 @@ export function useModelEffort(): UseModelEffortReturn {
   // Keyed by session key → resolved model ID. Survives session switches so
   // we don't re-fetch when switching back to a previously visited session.
   const [resolvedSessionModels, setResolvedSessionModels] = useState<Record<string, string>>({});
+
+  const rawCurrentSessionModel = useMemo(() => {
+    const cached = resolvedSessionModels[currentSession];
+    if (cached) return cached;
+
+    const s = sessions.find(sess => getSessionKey(sess) === currentSession);
+    return s?.model || null;
+  }, [sessions, currentSession, resolvedSessionModels]);
+
+  const modelOptionsList = useMemo(
+    () => buildSelectableModelList(gatewayModels, rawCurrentSessionModel || model),
+    [gatewayModels, rawCurrentSessionModel, model],
+  );
   const [selectedEffort, setSelectedEffort] = useState<EffortLevel>(() => {
     try {
       const saved = localStorage.getItem(getEffortKey(currentSession)) as EffortLevel | null;
@@ -245,10 +262,19 @@ export function useModelEffort(): UseModelEffortReturn {
   // Load gateway model catalog on mount
   useEffect(() => {
     fetchGatewayModels()
-      .then((models) => setGatewayModels(models && models.length > 0 ? models : []))
+      .then((result) => {
+        if (!result) {
+          setGatewayModels([]);
+          setUiError('Could not load configured models');
+          return;
+        }
+        setGatewayModels(result.models);
+        setUiError(buildModelCatalogUiError(result.models, result.error));
+      })
       .catch((err) => {
         console.warn('[useModelEffort] Failed to fetch gateway models:', err);
         setGatewayModels([]);
+        setUiError('Could not load configured models');
       });
   }, []);
 

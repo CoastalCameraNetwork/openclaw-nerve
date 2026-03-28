@@ -9,21 +9,32 @@ import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { Plus, RefreshCw, AlertCircle, CheckCircle } from 'lucide-react';
 import { MemoryItem, AddMemoryDialog, ConfirmDeleteDialog, MemoryEditor, useMemories } from '@/features/memory';
 import { MemorySkeletonGroup } from '@/components/skeletons';
+import { clearPersistedDraft, readPersistedDraft, writePersistedDraft } from '@/features/workspace/persistedDrafts';
 import type { Memory } from '@/types';
 
 interface MemoryListProps {
+  agentId: string;
   memories: Memory[];
   onRefresh: (signal?: AbortSignal) => void | Promise<void>;
   isLoading?: boolean;
   hideHeader?: boolean;
+  /** True when the workspace lives in a remote sandbox. */
+  remoteWorkspace?: boolean;
   /** Compact mode for mobile/topbar dropdown; uses kebab actions for rows. */
   compact?: boolean;
 }
 
+interface EditingMemoryState {
+  title: string;
+  date?: string;
+}
+
+const MEMORY_EDITOR_STATE_KIND = 'memory-editor:active';
+
 /** Searchable, editable list of agent memories with add/delete support. */
-export function MemoryList({ memories: initialMemories, onRefresh, isLoading: initialLoading, hideHeader, compact = false }: MemoryListProps) {
+export function MemoryList({ agentId, memories: initialMemories, onRefresh, isLoading: initialLoading, hideHeader, remoteWorkspace = false, compact = false }: MemoryListProps) {
   // useMemories provides optimistic state that reflects pending operations
-  const { memories, addMemory, deleteMemory, error, clearError, isLoading } = useMemories(initialMemories);
+  const { memories, addMemory, deleteMemory, error, clearError, isLoading } = useMemories(initialMemories, agentId);
   
   // Dialog states
   const [addDialogOpen, setAddDialogOpen] = useState(false);
@@ -31,7 +42,9 @@ export function MemoryList({ memories: initialMemories, onRefresh, isLoading: in
   const [memoryToDelete, setMemoryToDelete] = useState<{ text: string; type: Memory['type']; date?: string } | null>(null);
   
   // Editor state
-  const [editingMemory, setEditingMemory] = useState<{ title: string; date?: string } | null>(null);
+  const [editingMemory, setEditingMemory] = useState<EditingMemoryState | null>(() => (
+    readPersistedDraft<EditingMemoryState>(MEMORY_EDITOR_STATE_KIND, agentId)
+  ));
   
   // Collapse state — sections are collapsed by default
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set());
@@ -84,6 +97,19 @@ export function MemoryList({ memories: initialMemories, onRefresh, isLoading: in
 
   // Cleanup feedback timer on unmount
   useEffect(() => () => clearTimeout(feedbackTimerRef.current), []);
+
+  useEffect(() => {
+    setEditingMemory(readPersistedDraft<EditingMemoryState>(MEMORY_EDITOR_STATE_KIND, agentId));
+  }, [agentId]);
+
+  useEffect(() => {
+    if (editingMemory) {
+      writePersistedDraft(MEMORY_EDITOR_STATE_KIND, agentId, editingMemory);
+      return;
+    }
+
+    clearPersistedDraft(MEMORY_EDITOR_STATE_KIND, agentId);
+  }, [agentId, editingMemory]);
 
   // Show feedback temporarily
   const showFeedback = useCallback((type: 'success' | 'error', message: string) => {
@@ -186,6 +212,7 @@ export function MemoryList({ memories: initialMemories, onRefresh, isLoading: in
   if (editingMemory) {
     return (
       <MemoryEditor
+        agentId={agentId}
         title={editingMemory.title}
         date={editingMemory.date}
         onSave={handleEditorSave}
@@ -210,7 +237,7 @@ export function MemoryList({ memories: initialMemories, onRefresh, isLoading: in
       <div aria-live="polite" aria-atomic="true">
         {feedback && (
           <div
-            className={`px-3 py-1.5 text-[10px] flex items-center gap-1.5 border-b ${
+            className={`px-3 py-1.5 text-[0.667rem] flex items-center gap-1.5 border-b ${
               feedback.type === 'success'
                 ? 'bg-green/10 text-green border-green/20'
                 : 'bg-red/10 text-red border-red/20'
@@ -228,7 +255,7 @@ export function MemoryList({ memories: initialMemories, onRefresh, isLoading: in
 
       {/* Error display */}
       {error && !feedback && (
-        <div className="px-3 py-1.5 text-[10px] flex items-center gap-1.5 bg-red/10 text-red border-b border-red/20">
+        <div className="px-3 py-1.5 text-[0.667rem] flex items-center gap-1.5 bg-red/10 text-red border-b border-red/20">
           <AlertCircle size={10} />
           {error}
           <button
@@ -241,12 +268,21 @@ export function MemoryList({ memories: initialMemories, onRefresh, isLoading: in
         </div>
       )}
 
-      {/* Memory list */}
+      {/* Remote workspace notice */}
+      {remoteWorkspace ? (
+        <div className="flex-1 flex items-center justify-center px-4">
+          <div className="text-muted-foreground text-[0.733rem] text-center max-w-[240px]">
+            <p className="font-medium text-foreground/70 mb-1">Sandboxed Workspace</p>
+            <p>Memory management is not available when the workspace lives inside an OpenClaw sandbox. View and edit memories directly on the gateway host.</p>
+          </div>
+        </div>
+      ) : (
+      /* Memory list */
       <div className="flex-1 overflow-y-auto">
         {initialLoading && !memories.length ? (
           <MemorySkeletonGroup count={6} />
         ) : !memories.length ? (
-          <div className="text-muted-foreground px-3 py-4 text-[11px] text-center">
+          <div className="text-muted-foreground px-3 py-4 text-[0.733rem] text-center">
             <p>No memories yet</p>
             <button
               onClick={() => setAddDialogOpen(true)}
@@ -260,7 +296,7 @@ export function MemoryList({ memories: initialMemories, onRefresh, isLoading: in
           <div className="flex items-center border-b border-border/40">
             <button
               onClick={openAddDialog}
-              className="group flex items-center gap-2 px-3 py-1.5 text-[11px] hover:bg-foreground/[0.02] transition-colors cursor-pointer flex-1 bg-transparent border-0 text-left focus-visible:ring-2 focus-visible:ring-purple/50 focus-visible:ring-offset-0"
+              className="group flex items-center gap-2 px-3 py-1.5 text-[0.733rem] hover:bg-foreground/[0.02] transition-colors cursor-pointer flex-1 bg-transparent border-0 text-left focus-visible:ring-2 focus-visible:ring-purple/50 focus-visible:ring-offset-0"
               aria-label="Add new memory"
             >
               <span className="shrink-0 text-muted-foreground group-hover:text-purple transition-colors">
@@ -297,7 +333,9 @@ export function MemoryList({ memories: initialMemories, onRefresh, isLoading: in
           </>
         )}
       </div>
+      )}
 
+      {!remoteWorkspace && (<>
       {/* Add Memory Dialog */}
       <AddMemoryDialog
         open={addDialogOpen}
@@ -309,6 +347,7 @@ export function MemoryList({ memories: initialMemories, onRefresh, isLoading: in
 
       {/* Confirm Delete Dialog */}
       <ConfirmDeleteDialog
+        agentId={agentId}
         open={deleteDialogOpen}
         onOpenChange={setDeleteDialogOpen}
         memoryText={memoryToDelete?.text || ''}
@@ -318,6 +357,7 @@ export function MemoryList({ memories: initialMemories, onRefresh, isLoading: in
         onConfirm={handleConfirmDelete}
         isLoading={isLoading}
       />
+      </>)}
     </div>
   );
 }

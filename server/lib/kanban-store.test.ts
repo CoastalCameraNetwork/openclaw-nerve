@@ -1,5 +1,5 @@
 /** Tests for kanban-store: CRUD, CAS conflicts, reorder, config, filters, workflow, proposals. */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -10,14 +10,21 @@ import {
   InvalidTransitionError,
   ProposalNotFoundError,
   ProposalAlreadyResolvedError,
+  InvalidBoardConfigError,
 } from './kanban-store.js';
 import type { KanbanTask } from './kanban-store.js';
 
 let store: KanbanStore;
 let tmpDir: string;
 let filePath: string;
+let originalNerveDataDir: string | undefined;
+let originalNerveProjectRoot: string | undefined;
+let originalCwd: string;
 
 beforeEach(async () => {
+  originalNerveDataDir = process.env.NERVE_DATA_DIR;
+  originalNerveProjectRoot = process.env.NERVE_PROJECT_ROOT;
+  originalCwd = process.cwd();
   tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'kanban-test-'));
   filePath = path.join(tmpDir, 'tasks.json');
   store = new KanbanStore(filePath);
@@ -25,6 +32,11 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  if (originalNerveDataDir === undefined) delete process.env.NERVE_DATA_DIR;
+  else process.env.NERVE_DATA_DIR = originalNerveDataDir;
+  if (originalNerveProjectRoot === undefined) delete process.env.NERVE_PROJECT_ROOT;
+  else process.env.NERVE_PROJECT_ROOT = originalNerveProjectRoot;
+  process.chdir(originalCwd);
   await fs.promises.rm(tmpDir, { recursive: true, force: true });
 });
 
@@ -241,6 +253,26 @@ describe('listTasks', () => {
     const result = await store.listTasks();
     expect(result.items.map((t) => t.title)).toEqual(['Backlog', 'Todo 1', 'Todo 2', 'Done']);
   });
+
+  it('sorts by configured board column order for custom statuses', async () => {
+    await store.updateConfig({
+      columns: [
+        { key: 'backlog', title: 'Backlog', visible: true },
+        { key: 'blocked', title: 'Blocked', visible: true },
+        { key: 'todo', title: 'To Do', visible: true },
+        { key: 'in-progress', title: 'In Progress', visible: true },
+        { key: 'review', title: 'Review', visible: true },
+        { key: 'done', title: 'Done', visible: true },
+        { key: 'cancelled', title: 'Cancelled', visible: false },
+      ],
+    });
+
+    await createSampleTask({ title: 'Todo task', status: 'todo' });
+    await createSampleTask({ title: 'Blocked task', status: 'blocked' });
+
+    const result = await store.listTasks();
+    expect(result.items.map((t) => t.title)).toEqual(['Blocked task', 'Todo task']);
+  });
 });
 
 // ── Get ──────────────────────────────────────────────────────────────
@@ -435,6 +467,65 @@ describe('config', () => {
     const cfg = await store.getConfig();
     expect(cfg.quickViewLimit).toBe(20);
   });
+
+  it('preserves custom default status across reads', async () => {
+    await store.updateConfig({
+      columns: [
+        { key: 'backlog', title: 'Backlog', visible: true },
+        { key: 'todo', title: 'To Do', visible: true },
+        { key: 'in-progress', title: 'In Progress', visible: true },
+        { key: 'review', title: 'Review', visible: true },
+        { key: 'blocked', title: 'Blocked', visible: true },
+        { key: 'done', title: 'Done', visible: true },
+        { key: 'cancelled', title: 'Cancelled', visible: false },
+      ],
+      defaults: { status: 'blocked', priority: 'normal' },
+    });
+
+    const cfg = await store.getConfig();
+    expect(cfg.defaults.status).toBe('blocked');
+
+    const task = await createSampleTask({ title: 'Uses custom default' });
+    expect(task.status).toBe('blocked');
+  });
+
+  it('rejects config updates that remove a status used by existing tasks', async () => {
+    await store.updateConfig({
+      columns: [
+        { key: 'backlog', title: 'Backlog', visible: true },
+        { key: 'todo', title: 'To Do', visible: true },
+        { key: 'in-progress', title: 'In Progress', visible: true },
+        { key: 'review', title: 'Review', visible: true },
+        { key: 'blocked', title: 'Blocked', visible: true },
+        { key: 'done', title: 'Done', visible: true },
+        { key: 'cancelled', title: 'Cancelled', visible: false },
+      ],
+    });
+    await createSampleTask({ title: 'Blocked task', status: 'blocked' });
+
+    await expect(store.updateConfig({
+      columns: [
+        { key: 'backlog', title: 'Backlog', visible: true },
+        { key: 'todo', title: 'To Do', visible: true },
+        { key: 'in-progress', title: 'In Progress', visible: true },
+        { key: 'review', title: 'Review', visible: true },
+        { key: 'done', title: 'Done', visible: true },
+        { key: 'cancelled', title: 'Cancelled', visible: false },
+      ],
+    })).rejects.toBeInstanceOf(InvalidBoardConfigError);
+  });
+
+  it('rejects config updates that remove required built-in columns', async () => {
+    await expect(store.updateConfig({
+      columns: [
+        { key: 'backlog', title: 'Backlog', visible: true },
+        { key: 'todo', title: 'To Do', visible: true },
+        { key: 'in-progress', title: 'In Progress', visible: true },
+        { key: 'review', title: 'Review', visible: true },
+        { key: 'cancelled', title: 'Cancelled', visible: false },
+      ],
+    })).rejects.toBeInstanceOf(InvalidBoardConfigError);
+  });
 });
 
 // ── Concurrency ──────────────────────────────────────────────────────
@@ -508,6 +599,29 @@ describe('executeTask', () => {
     expect(second.run!.sessionKey).toBe(first.run!.sessionKey);
   });
 
+  it('uses a unique run key for same-millisecond reruns', async () => {
+    const task = await createSampleTask({ status: 'todo' });
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_777_777_777_777);
+
+    try {
+      const run1 = await store.executeTask(task.id);
+      const aborted = await store.abortTask(run1.id, 'rerun');
+      const run2 = await store.executeTask(aborted.id);
+
+      expect(run2.run!.sessionKey).not.toBe(run1.run!.sessionKey);
+
+      await expect(store.completeRun(run2.id, run1.run!.sessionKey, 'stale result')).rejects.toThrow(InvalidTransitionError);
+
+      const fresh = await store.getTask(task.id);
+      expect(fresh.status).toBe('in-progress');
+      expect(fresh.run?.status).toBe('running');
+      expect(fresh.run?.sessionKey).toBe(run2.run!.sessionKey);
+      expect(fresh.result).toBeUndefined();
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it('throws InvalidTransitionError for done task', async () => {
     const task = await createSampleTask({ status: 'todo' });
     // Manually set to done via updateTask
@@ -542,6 +656,51 @@ describe('executeTask', () => {
     const task = await createSampleTask({ status: 'todo' });
     const executed = await store.executeTask(task.id);
     expect(executed.columnOrder).toBe(1); // after existing
+  });
+});
+
+describe('attachRunIdentifiers', () => {
+  it('persists stable spawned identifiers without bumping the task version', async () => {
+    const task = await createSampleTask({ status: 'todo' });
+    const executed = await store.executeTask(task.id);
+
+    const linked = await store.attachRunIdentifiers(executed.id, executed.run!.sessionKey, {
+      childSessionKey: 'agent:main:subagent:stable-child',
+      runId: 'stable-run-123',
+    });
+
+    expect(linked).not.toBeNull();
+    expect(linked!.run?.sessionKey).toBe(executed.run!.sessionKey);
+    expect(linked!.run?.childSessionKey).toBe('agent:main:subagent:stable-child');
+    expect(linked!.run?.sessionId).toBe('agent:main:subagent:stable-child');
+    expect(linked!.run?.runId).toBe('stable-run-123');
+    expect(linked!.version).toBe(executed.version);
+
+    const fresh = await store.getTask(task.id);
+    expect(fresh.run?.childSessionKey).toBe('agent:main:subagent:stable-child');
+    expect(fresh.run?.sessionId).toBe('agent:main:subagent:stable-child');
+    expect(fresh.run?.runId).toBe('stable-run-123');
+    expect(fresh.version).toBe(executed.version);
+  });
+
+  it('ignores stale spawned identifiers after a rerun replaces the active run', async () => {
+    const task = await createSampleTask({ status: 'todo' });
+    const run1 = await store.executeTask(task.id);
+    await store.abortTask(run1.id, 'rerun');
+    const rerunnable = await store.getTask(task.id);
+    const run2 = await store.executeTask(rerunnable.id);
+
+    const linked = await store.attachRunIdentifiers(run2.id, run1.run!.sessionKey, {
+      childSessionKey: 'agent:main:subagent:stale-child',
+      runId: 'stale-run-123',
+    });
+
+    expect(linked).toBeNull();
+
+    const fresh = await store.getTask(task.id);
+    expect(fresh.run?.sessionKey).toBe(run2.run!.sessionKey);
+    expect(fresh.run?.childSessionKey).toBeUndefined();
+    expect(fresh.run?.runId).toBeUndefined();
   });
 });
 
@@ -690,7 +849,7 @@ describe('completeRun', () => {
     const task = await createSampleTask({ status: 'todo' });
     const executed = await store.executeTask(task.id);
 
-    const completed = await store.completeRun(executed.id, 'Task output here');
+    const completed = await store.completeRun(executed.id, executed.run!.sessionKey, 'Task output here');
     expect(completed.status).toBe('review');
     expect(completed.run!.status).toBe('done');
     expect(completed.run!.endedAt).toBeGreaterThan(0);
@@ -703,7 +862,7 @@ describe('completeRun', () => {
     const task = await createSampleTask({ status: 'todo' });
     const executed = await store.executeTask(task.id);
 
-    const completed = await store.completeRun(executed.id, undefined, 'Runtime error');
+    const completed = await store.completeRun(executed.id, executed.run!.sessionKey, undefined, 'Runtime error');
     expect(completed.status).toBe('todo');
     expect(completed.run!.status).toBe('error');
     expect(completed.run!.error).toBe('Runtime error');
@@ -712,18 +871,77 @@ describe('completeRun', () => {
 
   it('throws InvalidTransitionError when no active run', async () => {
     const task = await createSampleTask({ status: 'todo' });
-    await expect(store.completeRun(task.id, 'result')).rejects.toThrow(InvalidTransitionError);
+    await expect(store.completeRun(task.id, 'missing-run-key', 'result')).rejects.toThrow(InvalidTransitionError);
+  });
+
+  it('completes when the child session key matches the active run identifiers', async () => {
+    const task = await createSampleTask({ status: 'todo' });
+    const executed = await store.executeTask(task.id);
+    const linked = await store.attachRunIdentifiers(executed.id, executed.run!.sessionKey, {
+      childSessionKey: 'agent:main:subagent:stable-child',
+      runId: 'stable-run-123',
+    });
+
+    const completed = await store.completeRun(linked!.id, 'agent:main:subagent:stable-child', 'Task output here');
+    expect(completed.status).toBe('review');
+    expect(completed.run!.status).toBe('done');
+    expect(completed.run!.childSessionKey).toBe('agent:main:subagent:stable-child');
+    expect(completed.run!.runId).toBe('stable-run-123');
+  });
+
+  it('completes when the runId matches the active run identifiers', async () => {
+    const task = await createSampleTask({ status: 'todo' });
+    const executed = await store.executeTask(task.id);
+    const linked = await store.attachRunIdentifiers(executed.id, executed.run!.sessionKey, {
+      childSessionKey: 'agent:main:subagent:stable-child',
+      runId: 'stable-run-123',
+    });
+
+    const completed = await store.completeRun(linked!.id, 'stable-run-123', 'Task output here');
+    expect(completed.status).toBe('review');
+    expect(completed.run!.status).toBe('done');
+    expect(completed.run!.childSessionKey).toBe('agent:main:subagent:stable-child');
+    expect(completed.run!.runId).toBe('stable-run-123');
+  });
+
+  it('throws InvalidTransitionError when session key does not match the active run', async () => {
+    const task = await createSampleTask({ status: 'todo' });
+    const executed = await store.executeTask(task.id);
+
+    await expect(store.completeRun(executed.id, `${executed.run!.sessionKey}-stale`, 'result')).rejects.toThrow(InvalidTransitionError);
+
+    const fresh = await store.getTask(task.id);
+    expect(fresh.status).toBe('in-progress');
+    expect(fresh.run?.status).toBe('running');
+    expect(fresh.run?.sessionKey).toBe(executed.run!.sessionKey);
+    expect(fresh.result).toBeUndefined();
+  });
+
+  it('rejects late completion from run 1 after run 2 is active', async () => {
+    const task = await createSampleTask({ status: 'todo' });
+    const run1 = await store.executeTask(task.id);
+    await store.abortTask(run1.id, 'rerun');
+    const rerunnable = await store.getTask(task.id);
+    const run2 = await store.executeTask(rerunnable.id);
+
+    await expect(store.completeRun(run2.id, run1.run!.sessionKey, 'stale result')).rejects.toThrow(InvalidTransitionError);
+
+    const fresh = await store.getTask(task.id);
+    expect(fresh.status).toBe('in-progress');
+    expect(fresh.run?.status).toBe('running');
+    expect(fresh.run?.sessionKey).toBe(run2.run!.sessionKey);
+    expect(fresh.result).toBeUndefined();
   });
 
   it('throws TaskNotFoundError for missing task', async () => {
-    await expect(store.completeRun('nonexistent', 'result')).rejects.toThrow(TaskNotFoundError);
+    await expect(store.completeRun('nonexistent', 'missing-run-key', 'result')).rejects.toThrow(TaskNotFoundError);
   });
 
   it('completes without result string on success', async () => {
     const task = await createSampleTask({ status: 'todo' });
     const executed = await store.executeTask(task.id);
 
-    const completed = await store.completeRun(executed.id);
+    const completed = await store.completeRun(executed.id, executed.run!.sessionKey);
     expect(completed.status).toBe('review');
     expect(completed.run!.status).toBe('done');
     expect(completed.result).toBeUndefined();
@@ -802,7 +1020,7 @@ describe('full workflow', () => {
     expect(executed.status).toBe('in-progress');
 
     // Complete run
-    const completed = await store.completeRun(executed.id, 'Done!');
+    const completed = await store.completeRun(executed.id, executed.run!.sessionKey, 'Done!');
     expect(completed.status).toBe('review');
 
     // Approve
@@ -815,7 +1033,7 @@ describe('full workflow', () => {
     const task = await createSampleTask({ status: 'todo' });
 
     const executed = await store.executeTask(task.id);
-    const completed = await store.completeRun(executed.id, 'Half done');
+    const completed = await store.completeRun(executed.id, executed.run!.sessionKey, 'Half done');
     const rejected = await store.rejectTask(completed.id, 'Not good enough');
     expect(rejected.status).toBe('todo');
     expect(rejected.run).toBeUndefined();
@@ -1067,5 +1285,120 @@ describe('migration', () => {
     fs.writeFileSync(filePath, JSON.stringify({ meta: { schemaVersion: 1 } }));
     const result = await store.listTasks();
     expect(result.total).toBe(0);
+  });
+});
+
+describe('default path and legacy migration', () => {
+  it('stores default data under NERVE_DATA_DIR/kanban', async () => {
+    process.env.NERVE_DATA_DIR = path.join(tmpDir, 'nerve-data');
+    process.env.NERVE_PROJECT_ROOT = path.join(tmpDir, 'project');
+
+    const defaultStore = new KanbanStore();
+    await defaultStore.init();
+
+    const canonicalPath = path.join(process.env.NERVE_DATA_DIR, 'kanban', 'tasks.json');
+    expect(fs.existsSync(canonicalPath)).toBe(true);
+
+    const raw = JSON.parse(fs.readFileSync(canonicalPath, 'utf-8'));
+    expect(raw.tasks).toEqual([]);
+  });
+
+  it('migrates legacy server-dist data into the canonical store', async () => {
+    const projectRoot = path.join(tmpDir, 'project');
+    const legacyPath = path.join(projectRoot, 'server-dist', 'data', 'kanban', 'tasks.json');
+    process.env.NERVE_DATA_DIR = path.join(tmpDir, 'nerve-data');
+    process.env.NERVE_PROJECT_ROOT = projectRoot;
+
+    const legacyStore = new KanbanStore(legacyPath);
+    await legacyStore.init();
+    await legacyStore.createTask({ title: 'Recovered from server-dist', createdBy: 'operator' });
+
+    const defaultStore = new KanbanStore();
+    await defaultStore.init();
+
+    const result = await defaultStore.listTasks();
+    expect(result.total).toBe(1);
+    expect(result.items[0].title).toBe('Recovered from server-dist');
+    expect(fs.existsSync(path.join(process.env.NERVE_DATA_DIR, 'kanban', 'audit.log'))).toBe(true);
+  });
+
+  it('lazy-initializes and migrates before reads', async () => {
+    const projectRoot = path.join(tmpDir, 'project');
+    const legacyPath = path.join(projectRoot, 'server-dist', 'data', 'kanban', 'tasks.json');
+    process.env.NERVE_DATA_DIR = path.join(tmpDir, 'nerve-data');
+    process.env.NERVE_PROJECT_ROOT = projectRoot;
+
+    const legacyStore = new KanbanStore(legacyPath);
+    await legacyStore.init();
+    await legacyStore.createTask({ title: 'Recovered without explicit init', createdBy: 'operator' });
+
+    const defaultStore = new KanbanStore();
+    const result = await defaultStore.listTasks();
+
+    expect(result.total).toBe(1);
+    expect(result.items[0].title).toBe('Recovered without explicit init');
+  });
+
+  it('migrates legacy server data into the canonical store', async () => {
+    const projectRoot = path.join(tmpDir, 'project');
+    const legacyPath = path.join(projectRoot, 'server', 'data', 'kanban', 'tasks.json');
+    process.env.NERVE_DATA_DIR = path.join(tmpDir, 'nerve-data');
+    process.env.NERVE_PROJECT_ROOT = projectRoot;
+
+    const legacyStore = new KanbanStore(legacyPath);
+    await legacyStore.init();
+    await legacyStore.createTask({ title: 'Recovered from server', createdBy: 'operator' });
+
+    const defaultStore = new KanbanStore();
+    await defaultStore.init();
+
+    const result = await defaultStore.listTasks();
+    expect(result.total).toBe(1);
+    expect(result.items[0].title).toBe('Recovered from server');
+  });
+
+  it('prefers the canonical store when canonical and legacy data both exist', async () => {
+    const projectRoot = path.join(tmpDir, 'project');
+    const canonicalDir = path.join(tmpDir, 'nerve-data', 'kanban');
+    const legacyPath = path.join(projectRoot, 'server-dist', 'data', 'kanban', 'tasks.json');
+    process.env.NERVE_DATA_DIR = path.join(tmpDir, 'nerve-data');
+    process.env.NERVE_PROJECT_ROOT = projectRoot;
+
+    const legacyStore = new KanbanStore(legacyPath);
+    await legacyStore.init();
+    await legacyStore.createTask({ title: 'Legacy task', createdBy: 'operator' });
+
+    const canonicalStore = new KanbanStore(path.join(canonicalDir, 'tasks.json'));
+    await canonicalStore.init();
+    await canonicalStore.createTask({ title: 'Canonical task', createdBy: 'operator' });
+
+    const defaultStore = new KanbanStore();
+    await defaultStore.init();
+
+    const result = await defaultStore.listTasks();
+    expect(result.total).toBe(1);
+    expect(result.items[0].title).toBe('Canonical task');
+  });
+
+  it('prefers the richer legacy candidate over an empty one', async () => {
+    const projectRoot = path.join(tmpDir, 'project');
+    const emptyLegacyPath = path.join(projectRoot, 'server-dist', 'data', 'kanban', 'tasks.json');
+    const richLegacyPath = path.join(projectRoot, 'server', 'data', 'kanban', 'tasks.json');
+    process.env.NERVE_DATA_DIR = path.join(tmpDir, 'nerve-data');
+    process.env.NERVE_PROJECT_ROOT = projectRoot;
+
+    const emptyStore = new KanbanStore(emptyLegacyPath);
+    await emptyStore.init();
+
+    const richStore = new KanbanStore(richLegacyPath);
+    await richStore.init();
+    await richStore.createTask({ title: 'Rich legacy task', createdBy: 'operator' });
+
+    const defaultStore = new KanbanStore();
+    await defaultStore.init();
+
+    const result = await defaultStore.listTasks();
+    expect(result.total).toBe(1);
+    expect(result.items[0].title).toBe('Rich legacy task');
   });
 });

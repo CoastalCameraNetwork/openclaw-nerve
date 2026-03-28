@@ -11,6 +11,7 @@ interface MarkdownRendererProps {
   className?: string;
   searchQuery?: string;
   suppressImages?: boolean;
+  onOpenWorkspacePath?: (path: string) => void | Promise<void>;
 }
 
 function highlightText(text: string, query: string): React.ReactNode {
@@ -47,6 +48,23 @@ function processChildren(children: React.ReactNode, searchQuery?: string): React
   });
 }
 
+function isWorkspacePathLink(href: string): boolean {
+  if (!href) return false;
+  const trimmed = href.trim();
+  if (!trimmed || trimmed.startsWith('#')) return false;
+  if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(trimmed)) return false;
+  if (trimmed.startsWith('//')) return false;
+  return true;
+}
+
+function decodeWorkspacePathLink(href: string): string {
+  try {
+    return decodeURIComponent(href);
+  } catch {
+    return href;
+  }
+}
+
 // ─── Code Block with actions ─────────────────────────────────────────────────
 
 function CodeBlock({ code, language, highlightedHtml }: {
@@ -71,7 +89,7 @@ function CodeBlock({ code, language, highlightedHtml }: {
 // ─── Main renderer ───────────────────────────────────────────────────────────
 
 /** Render markdown content with syntax highlighting, search-term highlighting, and inline charts. */
-export function MarkdownRenderer({ content, className = '', searchQuery, suppressImages }: MarkdownRendererProps) {
+export function MarkdownRenderer({ content, className = '', searchQuery, suppressImages, onOpenWorkspacePath }: MarkdownRendererProps) {
   // Memoize components object to avoid unnecessary ReactMarkdown re-renders.
   // Only recreated when searchQuery or suppressImages changes.
   const components = useMemo(() => ({
@@ -125,13 +143,34 @@ export function MarkdownRenderer({ content, className = '', searchQuery, suppres
         <table className="markdown-table">{children}</table>
       </div>
     ),
-    a: ({ children, href }: { children?: React.ReactNode; href?: string }) => (
-      <a href={href} target="_blank" rel="noopener noreferrer" className="markdown-link">
-        {children}
-      </a>
-    ),
+    a: ({ children, href }: { children?: React.ReactNode; href?: string }) => {
+      if (!href) {
+        return <span>{children}</span>;
+      }
+
+      if (onOpenWorkspacePath && isWorkspacePathLink(href)) {
+        return (
+          <a
+            href={href}
+            className="markdown-link"
+            onClick={(event) => {
+              event.preventDefault();
+              void onOpenWorkspacePath(decodeWorkspacePathLink(href));
+            }}
+          >
+            {children}
+          </a>
+        );
+      }
+
+      return (
+        <a href={href} target="_blank" rel="noopener noreferrer" className="markdown-link">
+          {children}
+        </a>
+      );
+    },
     ...(suppressImages ? { img: () => null } : {}), // When set, images handled by extractedImages + ImageLightbox
-  }), [searchQuery, suppressImages]);
+  }), [onOpenWorkspacePath, searchQuery, suppressImages]);
 
   return (
     <div className={`markdown-content ${className}`}>

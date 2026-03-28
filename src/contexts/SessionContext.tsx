@@ -14,12 +14,14 @@ import {
   pickDefaultSessionKey,
   isRootChildSession,
 } from '@/features/sessions/sessionKeys';
+import { buildSpawnSubagentMessage, type SubagentCleanupMode } from '@/features/sessions/buildSpawnSubagentMessage';
 
 const BUSY_STATES = new Set(['running', 'thinking', 'tool_use', 'delta', 'started']);
 const IDLE_STATES = new Set(['idle', 'done', 'error', 'final', 'aborted', 'completed']);
 
 // sessions.list query defaults.
-// Wider window + higher cap avoids dropping subagents from the sidebar in busy workspaces.
+// Keep spawn/discovery polling on a recent active-window query, but use the
+// full session list for the sidebar so older root chats stay visible.
 const SESSIONS_ACTIVE_MINUTES = 24 * 60; // 24h
 const SESSIONS_LIMIT = 200;
 const FULL_SESSIONS_LIMIT = 1000;
@@ -32,6 +34,7 @@ export interface SpawnSessionOpts {
   model?: string;
   thinking?: string;
   label?: string;
+  cleanup?: SubagentCleanupMode;
   agentName?: string;
   parentSessionKey?: string;
 }
@@ -416,11 +419,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const refreshSessions = useCallback(async () => {
     if (connectionState !== 'connected') return;
     try {
-      const [res, hiddenCronSessions] = await Promise.all([
-        rpc('sessions.list', { activeMinutes: SESSIONS_ACTIVE_MINUTES, limit: SESSIONS_LIMIT }) as Promise<SessionsListResponse>,
-        fetchHiddenCronSessions(SESSIONS_ACTIVE_MINUTES, SESSIONS_LIMIT),
-      ]);
-      const newSessions = mergeSessionLists(res?.sessions || [], hiddenCronSessions);
+      const newSessions = await listAuthoritativeSessions();
       const nextCurrentSession = pickDefaultSessionKey(newSessions, currentSessionRef.current);
       
       // Smart diffing: preserve object references for unchanged sessions.
@@ -474,7 +473,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     } finally {
       setSessionsLoading(false);
     }
-  }, [connectionState, fetchHiddenCronSessions, mergeSessionLists, rpc]);
+  }, [connectionState, listAuthoritativeSessions]);
 
   // Update session in list from WebSocket event data
   const updateSessionFromEvent = useCallback((sessionKey: string, updates: Partial<Session>) => {
@@ -733,13 +732,15 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     if (!parentSessionKey) {
       throw new Error('Create a top-level agent before launching a subagent');
     }
-    const lines = ['[spawn-subagent]'];
-    lines.push(`task: ${opts.task}`);
-    if (opts.label) lines.push(`label: ${opts.label}`);
-    if (opts.model) lines.push(`model: ${opts.model}`);
-    if (opts.thinking && opts.thinking !== 'off') lines.push(`thinking: ${opts.thinking}`);
+    const message = buildSpawnSubagentMessage({
+      task: opts.task,
+      label: opts.label,
+      model: opts.model,
+      thinking: opts.thinking,
+      cleanup: opts.cleanup,
+    });
     const idempotencyKey = `spawn-subagent-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    await rpc('chat.send', { sessionKey: parentSessionKey, message: lines.join('\n'), idempotencyKey });
+    await rpc('chat.send', { sessionKey: parentSessionKey, message, idempotencyKey });
 
     // A spawned child can take a while to appear in sessions.list for non-main
     // roots, even after the parent agent accepts the request.

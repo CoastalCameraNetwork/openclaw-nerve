@@ -1,13 +1,17 @@
 /**
  * Kanban task store — JSON file persistence with mutex-protected I/O.
  *
- * Data lives at `server/data/kanban/tasks.json`. Every mutating operation
- * acquires the store mutex, reads the file, applies the change, and writes
- * back atomically. CAS version checks prevent stale overwrites.
+ * Runtime data lives under `${NERVE_DATA_DIR:-~/.nerve}/kanban/tasks.json`.
+ * Legacy installs may still have data under `server-dist/data/kanban/` or
+ * `server/data/kanban/`, so the store performs a one-time migration into the
+ * canonical runtime directory on first init. Every mutating operation acquires
+ * the store mutex, reads the file, applies the change, and writes back
+ * atomically. CAS version checks prevent stale overwrites.
  * @module
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -36,9 +40,34 @@ function uniqueSlugId(title: string, existingIds: Set<string>): string {
   }
 }
 
+const runKeySequenceByBase = new Map<string, number>();
+
+/** Build a human-readable run key that stays unique across same-millisecond reruns. */
+function uniqueRunSessionKey(id: string, now: number): string {
+  const base = `kb-${id}-${now}`;
+  const nextSequence = (runKeySequenceByBase.get(base) ?? 0) + 1;
+  runKeySequenceByBase.set(base, nextSequence);
+  return nextSequence === 1 ? base : `${base}-${nextSequence.toString(36)}`;
+}
+
+function matchesRunIdentifier(run: TaskRunLink, value: string): boolean {
+  return value === run.sessionKey
+    || value === run.childSessionKey
+    || value === run.sessionId
+    || value === run.runId;
+}
+
 // ── Types ────────────────────────────────────────────────────────────
 
-export type TaskStatus = 'backlog' | 'todo' | 'in-progress' | 'review' | 'done' | 'cancelled';
+/** Built-in status keys that ship with the default board config. */
+export const BUILT_IN_STATUSES = ['backlog', 'todo', 'in-progress', 'review', 'done', 'cancelled'] as const;
+export type BuiltInStatus = typeof BUILT_IN_STATUSES[number];
+
+/**
+ * TaskStatus is a string so users can define custom column keys.
+ * Built-in values are still the recommended defaults.
+ */
+export type TaskStatus = string;
 export type TaskPriority = 'critical' | 'high' | 'normal' | 'low';
 export type TaskActor = 'operator' | `agent:${string}`;
 
@@ -50,6 +79,7 @@ export interface TaskFeedback {
 
 export interface TaskRunLink {
   sessionKey: string;
+  childSessionKey?: string;
   sessionId?: string;
   runId?: string;
   startedAt: number;
@@ -103,7 +133,7 @@ export interface KanbanTask {
 
 export interface KanbanBoardConfig {
   columns: Array<{
-    key: TaskStatus;
+    key: string;
     title: string;
     wipLimit?: number;
     visible: boolean;
@@ -207,6 +237,30 @@ export class TaskNotFoundError extends Error {
   }
 }
 
+export class InvalidTaskStatusError extends Error {
+  status: string;
+  allowed: string[];
+  constructor(status: string, allowed: Iterable<string>) {
+    const allowedList = [...allowed];
+    super(`Invalid task status: ${status}`);
+    this.name = 'InvalidTaskStatusError';
+    this.status = status;
+    this.allowed = allowedList;
+  }
+}
+
+export class InvalidBoardConfigError extends Error {
+  details: string;
+  statuses: string[];
+  constructor(details: string, statuses: Iterable<string> = []) {
+    const statusList = [...statuses];
+    super(details);
+    this.name = 'InvalidBoardConfigError';
+    this.details = details;
+    this.statuses = statusList;
+  }
+}
+
 export class InvalidTransitionError extends Error {
   from: TaskStatus;
   to: TaskStatus;
@@ -224,7 +278,7 @@ const CURRENT_SCHEMA_VERSION = 1;
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 
-const STATUS_ORDER: Record<TaskStatus, number> = {
+const STATUS_ORDER: Record<string, number> = {
   backlog: 0,
   todo: 1,
   'in-progress': 2,
@@ -233,6 +287,40 @@ const STATUS_ORDER: Record<TaskStatus, number> = {
   cancelled: 5,
 };
 
+const REQUIRED_BOARD_COLUMNS: TaskStatus[] = ['backlog', 'todo', 'in-progress', 'review', 'done'];
+const VALID_TASK_STATUSES = new Set<string>(BUILT_IN_STATUSES);
+const VALID_TASK_PRIORITIES = new Set<TaskPriority>(['critical', 'high', 'normal', 'low']);
+
+function getConfiguredStatuses(config: KanbanBoardConfig): TaskStatus[] {
+  return config.columns.map((column) => column.key);
+}
+
+function getStatusOrderMap(config: KanbanBoardConfig): Map<string, number> {
+  return new Map(config.columns.map((column, index) => [column.key, index] as const));
+}
+
+function getAllowedTaskStatuses(config: KanbanBoardConfig): Set<string> {
+  return new Set([...BUILT_IN_STATUSES, ...getConfiguredStatuses(config)]);
+}
+
+function isAllowedTaskStatus(value: string, config: KanbanBoardConfig): boolean {
+  return getAllowedTaskStatuses(config).has(value);
+}
+
+function normalizeTaskStatus(value: unknown, configColumns?: TaskStatus[]): TaskStatus {
+  if (typeof value !== 'string') return DEFAULT_CONFIG.defaults.status;
+  // Accept built-in statuses or any key defined in the current board config
+  if (VALID_TASK_STATUSES.has(value)) return value;
+  if (configColumns && configColumns.includes(value)) return value;
+  return DEFAULT_CONFIG.defaults.status;
+}
+
+function normalizeTaskPriority(value: unknown): TaskPriority {
+  if (value === 'medium') return 'normal';
+  return typeof value === 'string' && VALID_TASK_PRIORITIES.has(value as TaskPriority)
+    ? (value as TaskPriority)
+    : DEFAULT_CONFIG.defaults.priority;
+}
 const DEFAULT_CONFIG: KanbanBoardConfig = {
   columns: [
     { key: 'backlog', title: 'Backlog', visible: true },
@@ -281,12 +369,21 @@ export class KanbanStore {
   private readonly filePath: string;
   private readonly auditPath: string;
   private readonly withLock: ReturnType<typeof createMutex>;
+  private readonly legacyCandidatePaths: string[];
 
   constructor(filePath?: string) {
     const __dirname = path.dirname(fileURLToPath(import.meta.url));
-    const dataDir = path.resolve(__dirname, '..', 'data', 'kanban');
+    const projectRoot = process.env.NERVE_PROJECT_ROOT || path.resolve(__dirname, '..', '..');
+    const dataRoot = process.env.NERVE_DATA_DIR || path.join(os.homedir() || process.cwd(), '.nerve');
+    const dataDir = path.join(dataRoot, 'kanban');
     this.filePath = filePath || path.join(dataDir, 'tasks.json');
     this.auditPath = path.join(path.dirname(this.filePath), 'audit.log');
+    this.legacyCandidatePaths = filePath
+      ? []
+      : [
+          path.join(projectRoot, 'server-dist', 'data', 'kanban', 'tasks.json'),
+          path.join(projectRoot, 'server', 'data', 'kanban', 'tasks.json'),
+        ];
     this.withLock = createMutex();
   }
 
@@ -336,6 +433,9 @@ export class KanbanStore {
     if (!data.config.defaults || !data.config.defaults.status) {
       data.config.defaults = structuredClone(DEFAULT_CONFIG.defaults);
     }
+const configuredStatuses = getConfiguredStatuses(data.config);
+    data.config.defaults.status = normalizeTaskStatus(data.config.defaults.status, configuredStatuses);
+    data.config.defaults.priority = normalizeTaskPriority(data.config.defaults.priority);
     if (!data.config.proposalPolicy) {
       data.config.proposalPolicy = 'confirm';
     }
@@ -348,8 +448,69 @@ export class KanbanStore {
     if (data.config.quickViewLimit === undefined) {
       data.config.quickViewLimit = DEFAULT_CONFIG.quickViewLimit;
     }
+data.tasks = data.tasks.map((task) => {
+      const childSessionKey = task.run?.childSessionKey ?? task.run?.sessionId;
+      return {
+        ...task,
+        status: normalizeTaskStatus(task.status, configuredStatuses),
+        priority: normalizeTaskPriority(task.priority),
+        run: task.run
+          ? {
+              ...task.run,
+              childSessionKey,
+              sessionId: task.run.sessionId ?? childSessionKey,
+            }
+          : task.run,
+      };
+    });
     data.meta.schemaVersion = CURRENT_SCHEMA_VERSION;
     return data;
+  }
+
+  private async loadLegacyCandidate(filePath: string): Promise<{
+    filePath: string;
+    auditPath: string;
+    data: StoreData;
+    contentScore: number;
+    mtimeMs: number;
+  } | null> {
+    try {
+      const raw = await fs.promises.readFile(filePath, 'utf-8');
+      const parsed = JSON.parse(raw) as StoreData;
+      const data = this.migrate(parsed);
+      const stats = await fs.promises.stat(filePath);
+      return {
+        filePath,
+        auditPath: path.join(path.dirname(filePath), 'audit.log'),
+        data,
+        contentScore: data.tasks.length + data.proposals.length,
+        mtimeMs: stats.mtimeMs,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async migrateLegacyStoreIfNeeded(): Promise<boolean> {
+    if (this.legacyCandidatePaths.length === 0) return false;
+
+    const candidates = (await Promise.all(this.legacyCandidatePaths.map((filePath) => this.loadLegacyCandidate(filePath))))
+      .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)
+      .sort((a, b) => b.contentScore - a.contentScore || b.mtimeMs - a.mtimeMs);
+
+    if (candidates.length === 0) return false;
+
+    const selected = candidates[0];
+    await this.writeRaw(selected.data);
+
+    try {
+      await fs.promises.copyFile(selected.auditPath, this.auditPath);
+    } catch {
+      // audit log migration is best-effort
+    }
+
+    console.log(`[kanban-store] migrated legacy store from ${selected.filePath} to ${this.filePath}`);
+    return true;
   }
 
   private async audit(entry: AuditEntry): Promise<void> {
@@ -370,16 +531,27 @@ export class KanbanStore {
     await this.withLock(async () => {
       try {
         await fs.promises.access(this.filePath);
+        return;
       } catch {
+        // canonical store missing, continue
+      }
+
+      const migrated = await this.migrateLegacyStoreIfNeeded();
+      if (!migrated) {
         await this.writeRaw(emptyStore());
       }
     });
   }
 
+  private async withStore<T>(fn: () => Promise<T>): Promise<T> {
+    await this.init();
+    return this.withLock(fn);
+  }
+
   // ── Tasks: List ──────────────────────────────────────────────────
 
   async listTasks(filters: TaskFilters = {}): Promise<TaskListResult> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       let tasks = data.tasks;
 
@@ -408,9 +580,12 @@ export class KanbanStore {
         );
       }
 
+      const statusOrder = getStatusOrderMap(data.config);
+
       // Sort: status order → columnOrder → updatedAt desc
       tasks.sort((a, b) => {
-        const statusDiff = STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
+        const statusDiff = (statusOrder.get(a.status) ?? STATUS_ORDER[a.status] ?? Number.MAX_SAFE_INTEGER)
+          - (statusOrder.get(b.status) ?? STATUS_ORDER[b.status] ?? Number.MAX_SAFE_INTEGER);
         if (statusDiff !== 0) return statusDiff;
         const orderDiff = a.columnOrder - b.columnOrder;
         if (orderDiff !== 0) return orderDiff;
@@ -429,7 +604,7 @@ export class KanbanStore {
   // ── Tasks: Get ───────────────────────────────────────────────────
 
   async getTask(id: string): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const task = data.tasks.find((t) => t.id === id);
       if (!task) throw new TaskNotFoundError(id);
@@ -454,8 +629,12 @@ export class KanbanStore {
     estimateMin?: number;
     metadata?: Record<string, unknown>;
   }): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
+
+      if (input.status && !isAllowedTaskStatus(input.status, data.config)) {
+        throw new InvalidTaskStatusError(input.status, getAllowedTaskStatuses(data.config));
+      }
 
       // Compute columnOrder — append to end of target column
       const targetStatus = input.status ?? data.config.defaults.status;
@@ -523,7 +702,7 @@ export class KanbanStore {
     >,
     actor?: string,
   ): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const idx = data.tasks.findIndex((t) => t.id === id);
       if (idx === -1) throw new TaskNotFoundError(id);
@@ -531,6 +710,10 @@ export class KanbanStore {
       const task = data.tasks[idx];
       if (task.version !== version) {
         throw new VersionConflictError(task.version, task);
+      }
+
+      if (patch.status && !isAllowedTaskStatus(patch.status, data.config)) {
+        throw new InvalidTaskStatusError(patch.status, getAllowedTaskStatuses(data.config));
       }
 
       // Apply patch
@@ -561,7 +744,7 @@ export class KanbanStore {
   // ── Tasks: Delete ────────────────────────────────────────────────
 
   async deleteTask(id: string, actor?: string): Promise<void> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const idx = data.tasks.findIndex((t) => t.id === id);
       if (idx === -1) throw new TaskNotFoundError(id);
@@ -581,7 +764,7 @@ export class KanbanStore {
     targetIndex: number,
     actor?: string,
   ): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const idx = data.tasks.findIndex((t) => t.id === id);
       if (idx === -1) throw new TaskNotFoundError(id);
@@ -589,6 +772,10 @@ export class KanbanStore {
       const task = data.tasks[idx];
       if (task.version !== version) {
         throw new VersionConflictError(task.version, task);
+      }
+
+      if (!isAllowedTaskStatus(targetStatus, data.config)) {
+        throw new InvalidTaskStatusError(targetStatus, getAllowedTaskStatuses(data.config));
       }
 
       const now = Date.now();
@@ -650,18 +837,50 @@ export class KanbanStore {
   // ── Config ───────────────────────────────────────────────────────
 
   async getConfig(): Promise<KanbanBoardConfig> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       return data.config;
     });
   }
 
   async updateConfig(patch: Partial<KanbanBoardConfig>): Promise<KanbanBoardConfig> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
-      data.config = { ...data.config, ...patch };
-      if (patch.columns) data.config.columns = patch.columns;
-      if (patch.defaults) data.config.defaults = { ...data.config.defaults, ...patch.defaults };
+      const nextConfig: KanbanBoardConfig = {
+        ...data.config,
+        ...patch,
+        columns: patch.columns ?? data.config.columns,
+        defaults: { ...data.config.defaults, ...patch.defaults },
+      };
+
+      const configuredStatuses = new Set(getConfiguredStatuses(nextConfig));
+      const missingBuiltIns = REQUIRED_BOARD_COLUMNS.filter((status) => !configuredStatuses.has(status));
+      if (missingBuiltIns.length > 0) {
+        throw new InvalidBoardConfigError(
+          `Missing required board columns: ${missingBuiltIns.join(', ')}`,
+          missingBuiltIns,
+        );
+      }
+
+      if (!isAllowedTaskStatus(nextConfig.defaults.status, nextConfig)) {
+        throw new InvalidTaskStatusError(nextConfig.defaults.status, getAllowedTaskStatuses(nextConfig));
+      }
+
+      const referencedStatuses = new Set<string>([
+        ...data.tasks.map((task) => task.status),
+        ...data.proposals.flatMap((proposal) => (
+          typeof proposal.payload?.status === 'string' ? [proposal.payload.status] : []
+        )),
+      ]);
+      const removedReferencedStatuses = [...referencedStatuses].filter((status) => !configuredStatuses.has(status));
+      if (removedReferencedStatuses.length > 0) {
+        throw new InvalidBoardConfigError(
+          `Cannot remove columns still in use: ${removedReferencedStatuses.join(', ')}`,
+          removedReferencedStatuses,
+        );
+      }
+
+      data.config = nextConfig;
       await this.writeRaw(data);
       await this.audit({ ts: Date.now(), action: 'config_update' });
       return data.config;
@@ -675,7 +894,7 @@ export class KanbanStore {
     options?: { model?: string; thinking?: 'off' | 'low' | 'medium' | 'high' },
     actor?: string,
   ): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const idx = data.tasks.findIndex((t) => t.id === id);
       if (idx === -1) throw new TaskNotFoundError(id);
@@ -697,8 +916,7 @@ export class KanbanStore {
       }
 
       const now = Date.now();
-      // Include a short timestamp suffix so reruns of the same task get unique session keys.
-      const sessionKey = `kb-${id}-${now}`;
+      const sessionKey = uniqueRunSessionKey(id, now);
 
       task.status = 'in-progress';
       task.run = {
@@ -706,6 +924,8 @@ export class KanbanStore {
         startedAt: now,
         status: 'running',
       };
+      task.result = undefined;
+      task.resultAt = undefined;
       if (options?.model) task.model = options.model;
       if (options?.thinking) task.thinking = options.thinking;
 
@@ -725,10 +945,49 @@ export class KanbanStore {
     });
   }
 
+  async attachRunIdentifiers(
+    taskId: string,
+    sessionKey: string,
+    identifiers: { childSessionKey?: string; runId?: string },
+  ): Promise<KanbanTask | null> {
+    return this.withStore(async () => {
+      const data = await this.readRaw();
+      const idx = data.tasks.findIndex((t) => t.id === taskId);
+      if (idx === -1) throw new TaskNotFoundError(taskId);
+
+      const task = data.tasks[idx];
+      if (!task.run || task.run.status !== 'running' || task.run.sessionKey !== sessionKey) {
+        return null;
+      }
+
+      const nextChildSessionKey = identifiers.childSessionKey ?? task.run.childSessionKey ?? task.run.sessionId;
+      const nextRunId = identifiers.runId ?? task.run.runId;
+      const nextSessionId = task.run.sessionId ?? nextChildSessionKey;
+
+      if (
+        nextChildSessionKey === task.run.childSessionKey
+        && nextRunId === task.run.runId
+        && nextSessionId === task.run.sessionId
+      ) {
+        return task;
+      }
+
+      task.run = {
+        ...task.run,
+        childSessionKey: nextChildSessionKey,
+        sessionId: nextSessionId,
+        runId: nextRunId,
+      };
+      data.tasks[idx] = task;
+      await this.writeRaw(data);
+      return task;
+    });
+  }
+
   // ── Workflow: Approve ────────────────────────────────────────────
 
   async approveTask(id: string, note?: string, actor?: string): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const idx = data.tasks.findIndex((t) => t.id === id);
       if (idx === -1) throw new TaskNotFoundError(id);
@@ -773,7 +1032,7 @@ export class KanbanStore {
   // ── Workflow: Reject ─────────────────────────────────────────────
 
   async rejectTask(id: string, note: string, actor?: string): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const idx = data.tasks.findIndex((t) => t.id === id);
       if (idx === -1) throw new TaskNotFoundError(id);
@@ -821,7 +1080,7 @@ export class KanbanStore {
   // ── Workflow: Abort ──────────────────────────────────────────────
 
   async abortTask(id: string, note?: string, actor?: string): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const idx = data.tasks.findIndex((t) => t.id === id);
       if (idx === -1) throw new TaskNotFoundError(id);
@@ -873,10 +1132,11 @@ export class KanbanStore {
 
   async completeRun(
     taskId: string,
+    sessionKey: string,
     result?: string,
     error?: string,
   ): Promise<KanbanTask> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const idx = data.tasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new TaskNotFoundError(taskId);
@@ -891,6 +1151,14 @@ export class KanbanStore {
         );
       }
 
+      if (!matchesRunIdentifier(task.run, sessionKey)) {
+        throw new InvalidTransitionError(
+          task.status,
+          error ? 'todo' : 'review',
+          `Run key mismatch for task "${taskId}": active run is "${task.run.sessionKey}", got "${sessionKey}"`,
+        );
+      }
+
       const now = Date.now();
       task.run.endedAt = now;
 
@@ -899,6 +1167,8 @@ export class KanbanStore {
         task.run.status = 'error';
         task.run.error = error;
         task.status = 'todo';
+        task.result = undefined;
+        task.resultAt = undefined;
 
         const maxOrder = data.tasks
           .filter((t) => t.status === 'todo' && t.id !== taskId)
@@ -928,7 +1198,7 @@ export class KanbanStore {
         ts: now,
         action: 'complete_run',
         taskId,
-        detail: error ? `error: ${error}` : 'success',
+        detail: error ? `session=${sessionKey},error: ${error}` : `session=${sessionKey},success`,
       });
       return task;
     });
@@ -937,7 +1207,7 @@ export class KanbanStore {
   // ── Stale run reconciliation ─────────────────────────────────────
 
   async reconcileStaleRuns(maxAgeMs: number): Promise<KanbanTask[]> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const now = Date.now();
       const reconciled: KanbanTask[] = [];
@@ -989,17 +1259,20 @@ export class KanbanStore {
     sourceSessionKey?: string;
     proposedBy: TaskActor;
   }): Promise<KanbanProposal> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const now = Date.now();
 
+// Validate status if present in payload
+      if ('status' in input.payload && typeof input.payload.status === 'string' && !isAllowedTaskStatus(input.payload.status, data.config)) {
+        throw new InvalidTaskStatusError(input.payload.status, getAllowedTaskStatuses(data.config));
+      }
+
       // For 'create' proposals, add suggested agents based on routing
       let payloadWithSuggestions = input.payload;
-      let suggestedAgents: string[] | undefined;
       if (input.type === 'create') {
         const payload = input.payload as { description?: string; title?: string };
         const routing = routeTask(payload.description || payload.title || '');
-        suggestedAgents = routing.agents;
         payloadWithSuggestions = {
           ...input.payload,
           suggestedAgents: routing.agents,
@@ -1046,7 +1319,7 @@ export class KanbanStore {
     id: string,
     actor: TaskActor = 'operator',
   ): Promise<{ proposal: KanbanProposal; task: KanbanTask }> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const proposal = data.proposals.find((p) => p.id === id);
       if (!proposal) throw new ProposalNotFoundError(id);
@@ -1094,7 +1367,7 @@ export class KanbanStore {
     reason?: string,
     actor: TaskActor = 'operator',
   ): Promise<KanbanProposal> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       const proposal = data.proposals.find((p) => p.id === id);
       if (!proposal) throw new ProposalNotFoundError(id);
@@ -1114,7 +1387,7 @@ export class KanbanStore {
   }
 
   async listProposals(statusFilter?: ProposalStatus): Promise<KanbanProposal[]> {
-    return this.withLock(async () => {
+    return this.withStore(async () => {
       const data = await this.readRaw();
       let proposals = data.proposals;
       if (statusFilter) {
@@ -1133,6 +1406,9 @@ export class KanbanStore {
     proposedBy: TaskActor,
   ): Promise<KanbanTask> {
     const targetStatus = (payload.status as TaskStatus) ?? data.config.defaults.status;
+    if (!isAllowedTaskStatus(targetStatus, data.config)) {
+      throw new InvalidTaskStatusError(targetStatus, getAllowedTaskStatuses(data.config));
+    }
     const maxOrder = data.tasks
       .filter((t) => t.status === targetStatus)
       .reduce((max, t) => Math.max(max, t.columnOrder), -1);
@@ -1188,6 +1464,9 @@ export class KanbanStore {
 
     // If status changed, re-compute columnOrder
     if (patch.status && patch.status !== task.status) {
+      if (typeof patch.status !== 'string' || !isAllowedTaskStatus(patch.status, data.config)) {
+        throw new InvalidTaskStatusError(String(patch.status), getAllowedTaskStatuses(data.config));
+      }
       const maxOrder = data.tasks
         .filter((t) => t.status === (patch.status as TaskStatus) && t.id !== taskId)
         .reduce((max, t) => Math.max(max, t.columnOrder), -1);

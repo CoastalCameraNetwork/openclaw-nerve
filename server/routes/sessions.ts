@@ -149,8 +149,10 @@ app.get('/api/sessions/hidden', rateLimitGeneral, async (c) => {
 
     return c.json({ ok: true, sessions });
   } catch (err) {
+    const errCode = (err as NodeJS.ErrnoException).code;
+    const isRemote = errCode === 'ENOENT';
     console.debug('[sessions] hidden list failed:', (err as Error).message);
-    return c.json({ ok: true, sessions: [] });
+    return c.json({ ok: true, sessions: [], ...(isRemote ? { remoteWorkspace: true } : {}) });
   }
 });
 

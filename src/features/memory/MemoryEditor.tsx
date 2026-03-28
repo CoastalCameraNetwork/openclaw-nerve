@@ -5,54 +5,119 @@
  * save/cancel actions.
  */
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Save, X, Loader2, ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { clearPersistedDraft, encodeDraftPart, readPersistedDraft, writePersistedDraft } from '@/features/workspace/persistedDrafts';
 
 interface MemoryEditorProps {
+  agentId: string;
   title: string;
   date?: string; // For daily files
   onSave: () => void;
   onCancel: () => void;
 }
 
+interface MemoryEditorDraft {
+  content: string;
+  originalContent: string;
+}
+
+function getMemoryDraftKind(title: string, date?: string): string {
+  const draftTitle = encodeDraftPart(title);
+  const draftDate = date ? encodeDraftPart(date) : 'root';
+  return `memory-editor:${draftDate}:${draftTitle}`;
+}
+
 /** Inline editor for modifying a memory entry's content. */
-export function MemoryEditor({ title, date, onSave, onCancel }: MemoryEditorProps) {
-  const [content, setContent] = useState('');
-  const [originalContent, setOriginalContent] = useState('');
-  const [isLoading, setIsLoading] = useState(true);
+export function MemoryEditor({ agentId, title, date, onSave, onCancel }: MemoryEditorProps) {
+  const draftKind = useMemo(() => getMemoryDraftKind(title, date), [title, date]);
+  const initialDraft = useMemo(
+    () => readPersistedDraft<MemoryEditorDraft>(draftKind, agentId),
+    [draftKind, agentId],
+  );
+  const [content, setContent] = useState(() => initialDraft?.content ?? '');
+  const [originalContent, setOriginalContent] = useState(() => initialDraft?.originalContent ?? '');
+  const [isLoading, setIsLoading] = useState(() => initialDraft === null);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const requestVersionRef = useRef(0);
+  const activeEditorKeyRef = useRef('');
 
-  // Fetch the section content on mount
+  const editorKey = useMemo(
+    () => `${agentId}:${date ?? 'root'}:${title}`,
+    [agentId, date, title],
+  );
+
+  const clearDraft = useCallback(() => {
+    clearPersistedDraft(draftKind, agentId);
+  }, [draftKind, agentId]);
+
   useEffect(() => {
-    const fetchContent = async () => {
-      setIsLoading(true);
+    activeEditorKeyRef.current = editorKey;
+  }, [editorKey]);
+
+  // Load persisted draft immediately, otherwise fetch the latest section content.
+  useEffect(() => {
+    const storedDraft = readPersistedDraft<MemoryEditorDraft>(draftKind, agentId);
+    setIsSaving(false);
+
+    if (storedDraft) {
+      setContent(storedDraft.content);
+      setOriginalContent(storedDraft.originalContent);
+      setIsLoading(false);
       setError(null);
+      return;
+    }
+
+    const requestVersion = ++requestVersionRef.current;
+    const controller = new AbortController();
+
+    setContent('');
+    setOriginalContent('');
+    setIsLoading(true);
+    setError(null);
+
+    const fetchContent = async () => {
       try {
-        const params = new URLSearchParams({ title });
+        const params = new URLSearchParams({ title, agentId });
         if (date) params.set('date', date);
 
-        const res = await fetch(`/api/memories/section?${params}`);
-        const data = await res.json();
+        const res = await fetch(`/api/memories/section?${params.toString()}`, {
+          signal: controller.signal,
+        });
+        const data = await res.json() as { ok: boolean; content?: string; error?: string };
+
+        if (controller.signal.aborted || requestVersionRef.current !== requestVersion || activeEditorKeyRef.current !== editorKey) {
+          return;
+        }
 
         if (!data.ok) {
           setError(data.error || 'Failed to load section');
           return;
         }
 
-        setContent(data.content || '');
-        setOriginalContent(data.content || '');
+        const nextContent = data.content || '';
+        setContent(nextContent);
+        setOriginalContent(nextContent);
       } catch (err) {
+        if ((err as Error).name === 'AbortError') return;
+        if (requestVersionRef.current !== requestVersion || activeEditorKeyRef.current !== editorKey) {
+          return;
+        }
         setError((err as Error).message);
       } finally {
-        setIsLoading(false);
+        if (!controller.signal.aborted && requestVersionRef.current === requestVersion && activeEditorKeyRef.current === editorKey) {
+          setIsLoading(false);
+        }
       }
     };
 
-    fetchContent();
-  }, [title, date]);
+    void fetchContent();
+
+    return () => controller.abort();
+  }, [agentId, title, date, draftKind, editorKey]);
 
   // Focus textarea after loading
   useEffect(() => {
@@ -63,8 +128,22 @@ export function MemoryEditor({ title, date, onSave, onCancel }: MemoryEditorProp
 
   const hasChanges = content !== originalContent;
 
+  useEffect(() => {
+    if (isLoading) return;
+
+    if (hasChanges) {
+      writePersistedDraft(draftKind, agentId, { content, originalContent });
+      return;
+    }
+
+    clearDraft();
+  }, [agentId, clearDraft, content, draftKind, hasChanges, isLoading, originalContent]);
+
   const handleSave = async () => {
     if (!hasChanges || isSaving) return;
+
+    const requestVersion = ++requestVersionRef.current;
+    const requestEditorKey = editorKey;
 
     setIsSaving(true);
     setError(null);
@@ -73,29 +152,39 @@ export function MemoryEditor({ title, date, onSave, onCancel }: MemoryEditorProp
       const res = await fetch('/api/memories/section', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, content, date }),
+        body: JSON.stringify({ title, content, date, agentId }),
       });
 
-      const data = await res.json();
+      const data = await res.json() as { ok: boolean; error?: string };
+
+      if (requestVersionRef.current !== requestVersion || activeEditorKeyRef.current !== requestEditorKey) {
+        return;
+      }
 
       if (!data.ok) {
         setError(data.error || 'Failed to save');
         return;
       }
 
+      clearDraft();
       onSave();
     } catch (err) {
+      if (requestVersionRef.current !== requestVersion || activeEditorKeyRef.current !== requestEditorKey) {
+        return;
+      }
       setError((err as Error).message);
     } finally {
-      setIsSaving(false);
+      if (requestVersionRef.current === requestVersion && activeEditorKeyRef.current === requestEditorKey) {
+        setIsSaving(false);
+      }
     }
   };
 
   const handleCancel = () => {
     if (hasChanges) {
-      // Simple confirm - could use ConfirmDialog component for consistency
       const confirmed = window.confirm('Discard unsaved changes?');
       if (!confirmed) return;
+      clearDraft();
     }
     onCancel();
   };
@@ -130,7 +219,7 @@ export function MemoryEditor({ title, date, onSave, onCancel }: MemoryEditorProp
           {date ? `${date} / ${title}` : title}
         </span>
         {hasChanges && (
-          <span className="text-[9px] text-yellow-500 uppercase tracking-wider">
+          <span className="text-[0.6rem] text-yellow-500 uppercase tracking-wider">
             modified
           </span>
         )}
@@ -138,7 +227,7 @@ export function MemoryEditor({ title, date, onSave, onCancel }: MemoryEditorProp
 
       {/* Error display */}
       {error && (
-        <div className="px-3 py-1.5 text-[10px] flex items-center gap-1.5 bg-red/10 text-red border-b border-red/20">
+        <div className="px-3 py-1.5 text-[0.667rem] flex items-center gap-1.5 bg-red/10 text-red border-b border-red/20">
           {error}
           <button
             onClick={() => setError(null)}
@@ -161,7 +250,7 @@ export function MemoryEditor({ title, date, onSave, onCancel }: MemoryEditorProp
             value={content}
             onChange={(e) => setContent(e.target.value)}
             onKeyDown={handleKeyDown}
-            className="flex-1 w-full bg-transparent text-[11px] font-mono text-foreground px-3 py-2 resize-none focus:outline-none border-none placeholder:text-muted-foreground/50"
+            className="flex-1 w-full bg-transparent text-[0.733rem] font-mono text-foreground px-3 py-2 resize-none focus:outline-none border-none placeholder:text-muted-foreground/50"
             placeholder="Enter section content..."
             disabled={isSaving}
             spellCheck={false}
@@ -172,7 +261,7 @@ export function MemoryEditor({ title, date, onSave, onCancel }: MemoryEditorProp
 
       {/* Footer with actions */}
       <div className="flex items-center justify-between gap-2 px-3 py-2 border-t border-border/40 bg-card/30">
-        <span className="text-[9px] text-muted-foreground">
+        <span className="text-[0.6rem] text-muted-foreground">
           {hasChanges ? 'Ctrl+S to save • Esc to cancel' : ''}
         </span>
         <div className="flex items-center gap-1.5">
@@ -181,7 +270,7 @@ export function MemoryEditor({ title, date, onSave, onCancel }: MemoryEditorProp
             size="sm"
             onClick={handleCancel}
             disabled={isSaving}
-            className="h-6 px-2 text-[10px] font-mono"
+            className="h-6 px-2 text-[0.667rem] font-mono"
           >
             <X size={12} className="mr-1" />
             Cancel
@@ -190,7 +279,7 @@ export function MemoryEditor({ title, date, onSave, onCancel }: MemoryEditorProp
             size="sm"
             onClick={handleSave}
             disabled={!hasChanges || isSaving || isLoading}
-            className="h-6 px-2 text-[10px] font-mono bg-purple hover:bg-purple/90 text-white"
+            className="h-6 px-2 text-[0.667rem] font-mono bg-purple hover:bg-purple/90 text-white"
           >
             {isSaving ? (
               <Loader2 size={12} className="mr-1 animate-spin" />

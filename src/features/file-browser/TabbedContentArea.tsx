@@ -26,13 +26,15 @@ function EditorFallback() {
 }
 
 interface SaveToast {
+  agentId?: string;
   path: string;
-  type: 'conflict' | 'error';
+  type: 'conflict';
 }
 
 interface TabbedContentAreaProps {
   activeTab: string;
   openFiles: OpenFile[];
+  workspaceAgentId: string;
   onSelectTab: (id: string) => void;
   onCloseTab: (path: string) => void;
   onContentChange: (path: string, content: string) => void;
@@ -48,6 +50,7 @@ interface TabbedContentAreaProps {
 export function TabbedContentArea({
   activeTab,
   openFiles,
+  workspaceAgentId,
   onSelectTab,
   onCloseTab,
   onContentChange,
@@ -59,6 +62,9 @@ export function TabbedContentArea({
   chatPanel,
 }: TabbedContentAreaProps) {
   const hasOpenFiles = openFiles.length > 0;
+  const visibleSaveToast = saveToast && (!saveToast.agentId || saveToast.agentId === workspaceAgentId)
+    ? saveToast
+    : null;
 
   return (
     <div className="h-full flex flex-col min-h-0 min-w-0">
@@ -94,7 +100,7 @@ export function TabbedContentArea({
             aria-labelledby={`tab-${file.path}`}
           >
             {isImageFile(file.name) ? (
-              <ImageViewer file={file} />
+              <ImageViewer file={file} agentId={workspaceAgentId} />
             ) : (
               <Suspense fallback={<EditorFallback />}>
                 <FileEditor
@@ -109,18 +115,14 @@ export function TabbedContentArea({
         ))}
 
         {/* Save conflict toast */}
-        {saveToast && (
+        {visibleSaveToast && (
           <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-4 py-2.5 rounded-lg bg-destructive/10 border border-destructive/30 text-sm shadow-lg animate-in fade-in slide-in-from-bottom-2 duration-200">
             <AlertTriangle size={14} className="text-destructive shrink-0" />
-            <span className="text-foreground">
-              {saveToast.type === 'conflict'
-                ? 'File changed externally.'
-                : 'Failed to save.'}
-            </span>
-            {saveToast.type === 'conflict' && onReloadFile && (
+            <span className="text-foreground">File changed externally.</span>
+            {onReloadFile && (
               <button
                 className="text-primary text-xs font-medium hover:underline"
-                onClick={() => { onReloadFile(saveToast.path); onDismissToast?.(); }}
+                onClick={() => { onReloadFile(visibleSaveToast.path); onDismissToast?.(); }}
               >
                 Reload
               </button>

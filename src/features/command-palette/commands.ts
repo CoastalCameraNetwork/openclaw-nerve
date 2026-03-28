@@ -43,9 +43,9 @@ const THEME_LABELS: Record<ThemeName, string> = {
 };
 
 const FONT_LABELS: Record<FontName, string> = {
-  'inter': 'Inter',
+  'instrument-sans': 'Instrument Sans',
+  'space-grotesk': 'Space Grotesk',
   'jetbrains-mono': 'JetBrains Mono',
-  'system': 'System Default',
 };
 
 /** Build the full list of command-palette commands from action callbacks. */
@@ -174,6 +174,13 @@ export function createCommands(actions: CommandActions): Command[] {
       action: () => actions.onTtsProviderChange('edge' as TTSProvider),
       category: 'voice',
       keywords: ['tts', 'voice', 'speech', 'edge', 'free'],
+    },
+    {
+      id: 'tts-xiaomi',
+      label: 'TTS: Switch to Xiaomi Mimo',
+      action: () => actions.onTtsProviderChange('xiaomi' as TTSProvider),
+      category: 'voice',
+      keywords: ['tts', 'voice', 'speech', 'xiaomi', 'mimo'],
     },
     {
       id: 'toggle-wake-word',

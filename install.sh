@@ -37,6 +37,7 @@ NODE_MIN=22
 SKIP_SETUP=false
 DRY_RUN=false
 GATEWAY_TOKEN=""
+ACCESS_MODE=""
 ENV_MISSING=false
 
 # ── Colors ────────────────────────────────────────────────────────────
@@ -79,6 +80,11 @@ check_port() {
     netstat -tlnp 2>/dev/null | grep -q ":${port} " && return 1
   fi
   return 0
+}
+
+repo_has_local_changes() {
+  local repo_dir="$1"
+  git -C "$repo_dir" status --porcelain --untracked-files=normal 2>/dev/null | grep -q .
 }
 
 # Animated dots while a background process runs
@@ -222,18 +228,20 @@ while [[ $# -gt 0 ]]; do
     --skip-setup) SKIP_SETUP=true; shift ;;
     --dry-run)    DRY_RUN=true; shift ;;
     --gateway-token) [[ $# -ge 2 ]] || { echo "Missing value for --gateway-token"; exit 1; }; GATEWAY_TOKEN="$2"; shift 2 ;;
+    --access-mode) [[ $# -ge 2 ]] || { echo "Missing value for --access-mode"; exit 1; }; ACCESS_MODE="$2"; shift 2 ;;
     --help|-h)
       echo "Nerve Installer"
       echo ""
       echo "Options:"
-      echo "  --dir <path>       Install directory (default: ~/nerve)"
-      echo "  --version <vX.Y.Z> Install a specific release version"
-      echo "  --branch <name>    Install from a branch (dev override; bypasses release mode)"
-      echo "  --repo <url>       Git repo URL"
-      echo "  --skip-setup       Skip the interactive setup wizard"
-      echo "  --gateway-token <t> Gateway token (for non-interactive installs)"
-      echo "  --dry-run          Simulate the install without changing anything"
-      echo "  --help             Show this help"
+      echo "  --dir <path>         Install directory (default: ~/nerve)"
+      echo "  --version <vX.Y.Z>   Install a specific release version"
+      echo "  --branch <name>      Install from a branch (dev override; bypasses release mode)"
+      echo "  --repo <url>         Git repo URL"
+      echo "  --skip-setup         Skip the interactive setup wizard"
+      echo "  --gateway-token <t>  Gateway token (for non-interactive installs)"
+      echo "  --access-mode <m>    Setup access mode: local|network|custom|tailscale-ip|tailscale-serve"
+      echo "  --dry-run            Simulate the install without changing anything"
+      echo "  --help               Show this help"
       exit 0
       ;;
     *) echo "Unknown option: $1"; exit 1 ;;
@@ -245,14 +253,29 @@ if [[ -n "$VERSION" && "$BRANCH_EXPLICIT" == "true" ]]; then
   exit 1
 fi
 
+normalize_access_mode() {
+  case "$1" in
+    "") echo "" ;;
+    tailscale) echo "tailscale-ip" ;;
+    local|network|custom|tailscale-ip|tailscale-serve) echo "$1" ;;
+    *)
+      fail "Invalid --access-mode: $1"
+      echo "  Supported values: local, network, custom, tailscale-ip, tailscale-serve"
+      exit 1
+      ;;
+  esac
+}
+
+ACCESS_MODE=$(normalize_access_mode "$ACCESS_MODE")
+
 # ── Detect interactive mode ───────────────────────────────────────────
 # When piped via curl | bash, stdin is the pipe — but /dev/tty still
 # provides access to the controlling terminal for interactive prompts.
-# We check readable+writable (like OpenClaw's installer does).
+# Only treat it as interactive when that controlling terminal is real.
 INTERACTIVE=false
 if [[ -t 0 ]]; then
   INTERACTIVE=true
-elif [[ -r /dev/tty && -w /dev/tty ]]; then
+elif { tty -s < /dev/tty; } 2>/dev/null; then
   INTERACTIVE=true
 fi
 
@@ -416,15 +439,28 @@ check_build_tools() {
   # Auto-install on Debian/Ubuntu
   if command -v apt-get &>/dev/null; then
     if [[ "$DRY_RUN" == "true" ]]; then
-      dry "Would install build-essential via apt"
+      if [[ $EUID -eq 0 ]]; then
+        dry "Would install build-essential via apt"
+      else
+        dry "Would require manual install: sudo apt install build-essential"
+      fi
       return 0
     fi
-    run_with_dots "Installing build tools" bash -c "DEBIAN_FRONTEND=noninteractive apt-get update -qq &>/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential &>/dev/null"
-    if command -v make &>/dev/null && command -v g++ &>/dev/null; then
-      ok "Build tools installed"
-      return 0
+    if [[ $EUID -eq 0 ]]; then
+      run_with_dots "Installing build tools" bash -c "DEBIAN_FRONTEND=noninteractive apt-get update -qq &>/dev/null && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential &>/dev/null"
+      if command -v make &>/dev/null && command -v g++ &>/dev/null; then
+        ok "Build tools installed"
+        return 0
+      else
+        fail "Failed to install build-essential"
+      fi
     else
-      fail "Failed to install build-essential"
+      warn "Build tools can be auto-installed only when running as root"
+      echo ""
+      hint "Install build tools:"
+      cmd "sudo apt install build-essential"
+      echo ""
+      exit 1
     fi
   fi
 
@@ -535,6 +571,7 @@ fi
 if [[ "$DRY_RUN" == "true" ]]; then
   if [[ -d "$INSTALL_DIR/.git" ]]; then
     dry "Would update existing installation in ${INSTALL_DIR}"
+    dry "Would warn before overwriting local repo changes"
     dry "Would checkout ${TARGET_REF}"
   else
     dry "Would clone ${REPO}"
@@ -543,6 +580,27 @@ if [[ "$DRY_RUN" == "true" ]]; then
   fi
 else
   if [[ -d "$INSTALL_DIR/.git" ]]; then
+    if repo_has_local_changes "$INSTALL_DIR"; then
+      warn "Existing installation has local repo changes"
+      info "Updating will discard tracked edits in ${INSTALL_DIR}"
+      if [[ "$INTERACTIVE" == "true" ]]; then
+        printf "  ${RAIL}  ${YELLOW}?${NC} Continue and overwrite local changes? (y/N) "
+        if read -r answer < /dev/tty 2>/dev/null; then
+          if [[ "$(echo "$answer" | tr "[:upper:]" "[:lower:]")" != "y" ]]; then
+            fail "Aborted to avoid overwriting local changes"
+            exit 1
+          fi
+        else
+          fail "Cannot confirm destructive update safely"
+          exit 1
+        fi
+      else
+        fail "Refusing to overwrite a dirty install in non-interactive mode"
+        info "Commit, stash, or back up ${INSTALL_DIR}, then rerun the installer"
+        exit 1
+      fi
+    fi
+
     cd "$INSTALL_DIR"
 
     if [[ "$TARGET_REF_KIND" == "branch" || "$TARGET_REF_KIND" == "branch-fallback" ]]; then
@@ -576,7 +634,6 @@ stage "Install & Build"
 if [[ "$DRY_RUN" == "true" ]]; then
   dry "Would run: npm ci"
   dry "Would run: npm run build"
-  dry "Would run: npm run build:server"
 else
   npm_log=$(mktemp /tmp/nerve-npm-install-XXXXXX)
 
@@ -635,11 +692,11 @@ else
 
   build_log=$(mktemp /tmp/nerve-build-XXXXXX)
 
-  run_with_dots "Building client" bash -c "npm run build > '$build_log' 2>&1"
+  run_with_dots "Building project" bash -c "npm run build > '$build_log' 2>&1"
   if [[ $RWD_EXIT -eq 0 ]]; then
-    ok "Client built"
+    ok "Client and server built"
   else
-    fail "Client build failed"
+    fail "Build failed"
     # Rollback to previous build output if available
     if [[ -n "${BUILD_BACKUP:-}" ]]; then
       rm -rf dist server-dist 2>/dev/null
@@ -657,32 +714,6 @@ else
     hint "Troubleshooting:"
     echo -e "  ${RAIL}  ${DIM}1. Check the full log: cat ${build_log}${NC}"
     echo -e "  ${RAIL}  ${DIM}2. Try rebuilding: npm run build${NC}"
-    echo ""
-    exit 1
-  fi
-
-  run_with_dots "Building server" bash -c "npm run build:server >> '$build_log' 2>&1"
-  if [[ $RWD_EXIT -eq 0 ]]; then
-    ok "Server built"
-  else
-    fail "Server build failed"
-    # Rollback to previous build output if available
-    if [[ -n "${BUILD_BACKUP:-}" ]]; then
-      rm -rf dist server-dist 2>/dev/null
-      [[ -d "$BUILD_BACKUP/dist" ]] && cp -a "$BUILD_BACKUP/dist" dist
-      [[ -d "$BUILD_BACKUP/server-dist" ]] && cp -a "$BUILD_BACKUP/server-dist" server-dist
-      warn "Restored previous build output"
-    fi
-    echo ""
-    echo -e "  ${RAIL}  ${DIM}── Last 10 lines ──${NC}"
-    tail -10 "$build_log" | while IFS= read -r line; do
-      echo -e "  ${RAIL}  ${DIM}${line}${NC}"
-    done
-    echo -e "  ${RAIL}  ${DIM}── Full log: ${build_log} ──${NC}"
-    echo ""
-    hint "Troubleshooting:"
-    echo -e "  ${RAIL}  ${DIM}1. Check the full log: cat ${build_log}${NC}"
-    echo -e "  ${RAIL}  ${DIM}2. Try rebuilding: npm run build:server${NC}"
     echo ""
     exit 1
   fi
@@ -787,13 +818,17 @@ generate_env_from_gateway() {
   if [[ -n "$gw_token" ]]; then
     local nerve_port=3080
     if ! check_port "$nerve_port"; then
-      if [[ "$NON_INTERACTIVE" == "true" ]]; then
+      if [[ "$INTERACTIVE" != "true" ]]; then
         fail "Port ${nerve_port} is already in use. Set a different PORT in .env or free the port."
+        exit 1
       else
         warn "Port ${nerve_port} is already in use"
         while true; do
           printf "  ${RAIL}  ${CYAN}→${NC} Enter an available port: "
-          read -r nerve_port < /dev/tty || fail "Cannot read from terminal"
+          if ! read -r nerve_port < /dev/tty 2>/dev/null; then
+            fail "Cannot read from terminal"
+            exit 1
+          fi
           if [[ ! "$nerve_port" =~ ^[0-9]+$ ]] || (( nerve_port < 1 || nerve_port > 65535 )); then
             warn "Invalid port number"
             continue
@@ -824,6 +859,8 @@ stage "Configure"
 if [[ "$DRY_RUN" == "true" ]]; then
   if [[ "$SKIP_SETUP" == "true" ]]; then
     dry "Would skip setup wizard (--skip-setup)"
+  elif [[ -n "$ACCESS_MODE" ]]; then
+    dry "Would run non-interactive setup wizard (--defaults --access-mode ${ACCESS_MODE})"
   else
     dry "Would launch interactive setup wizard"
     dry "Would prompt for: gateway token, port, TTS config"
@@ -837,8 +874,8 @@ else
       generate_env_from_gateway
     fi
   else
-    if [[ "$INTERACTIVE" == "true" ]]; then
-      if [[ -f .env ]]; then
+    if [[ -f .env ]]; then
+      if [[ "$INTERACTIVE" == "true" && -z "$ACCESS_MODE" ]]; then
         ok "Existing .env found"
         printf "  ${RAIL}  ${YELLOW}?${NC} Run setup wizard anyway? (y/N) "
         if read -r answer < /dev/tty 2>/dev/null; then
@@ -854,18 +891,22 @@ else
           warn "Cannot read input — run ${CYAN}npm run setup${NC} manually to reconfigure"
         fi
       else
-        NERVE_INSTALLER=1 npm run setup < /dev/tty 2>/dev/null || {
-          warn "Setup wizard failed — attempting auto-config from gateway..."
-          generate_env_from_gateway
-        }
-      fi
-    else
-      if [[ -f .env ]]; then
         ok "Existing .env found — keeping current configuration"
-      else
-        info "Non-interactive mode — generating .env from gateway config..."
-        generate_env_from_gateway
       fi
+    elif [[ -n "$ACCESS_MODE" ]]; then
+      info "Explicit access mode requested — running non-interactive setup wizard..."
+      NERVE_INSTALLER=1 npm run setup -- --defaults --access-mode "$ACCESS_MODE" || {
+        fail "Setup failed for --access-mode ${ACCESS_MODE}"
+        exit 1
+      }
+    elif [[ "$INTERACTIVE" == "true" ]]; then
+      NERVE_INSTALLER=1 npm run setup < /dev/tty 2>/dev/null || {
+        warn "Setup wizard failed — attempting auto-config from gateway..."
+        generate_env_from_gateway
+      }
+    else
+      info "Non-interactive mode — generating .env from gateway config..."
+      generate_env_from_gateway
     fi
   fi
 fi
@@ -989,8 +1030,9 @@ setup_launchd() {
 
   mkdir -p "$plist_dir"
 
-  # Create a wrapper script that sources .env at runtime (not baked at install time)
-  # This way token/config changes in .env take effect on next service restart
+  # Create a wrapper script that launches the built server from the install dir.
+  # server/lib/config.ts loads .env at runtime, so the wrapper should not source it
+  # directly (raw .env values are dotenv-compatible but not necessarily shell-safe).
   local start_script="${working_dir}/start.sh"
   # The plist sets PATH in EnvironmentVariables, but the wrapper also needs
   # to find node if run manually. Bake the current node path as a fallback.
@@ -998,15 +1040,10 @@ setup_launchd() {
   node_dir_escaped=$(dirname "${node_bin}")
   cat > "$start_script" <<STARTEOF
 #!/bin/bash
-# Nerve start wrapper — sources .env at runtime so config changes
-# take effect on restart without touching the plist
+# Nerve start wrapper — .env is loaded by the Node server at runtime.
 SCRIPT_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
+cd "\${SCRIPT_DIR}"
 export PATH="${node_dir_escaped}:\${PATH}"
-if [[ -f "\${SCRIPT_DIR}/.env" ]]; then
-  set -a
-  source "\${SCRIPT_DIR}/.env"
-  set +a
-fi
 export NODE_ENV=production
 exec node "\${SCRIPT_DIR}/server-dist/index.js"
 STARTEOF
@@ -1200,6 +1237,10 @@ fi
 echo ""
 
 # Exit code reflects actual readiness
+if [[ "$DRY_RUN" == "true" ]]; then
+  exit 0
+fi
+
 if [[ "$ENV_MISSING" == "true" ]] || [[ ! -f "${INSTALL_DIR}/.env" ]]; then
   warn "Install complete but Nerve is not fully configured"
   info "Run: cd ${INSTALL_DIR} && npm run setup"

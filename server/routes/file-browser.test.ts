@@ -6,25 +6,37 @@ import path from 'node:path';
 import os from 'node:os';
 
 describe('file-browser routes', () => {
+  let homeDir: string;
   let tmpDir: string;
+  let researchWorkspace: string;
 
   beforeEach(async () => {
     vi.resetModules();
-    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fbrowser-test-'));
+    homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'fbrowser-test-'));
+    tmpDir = path.join(homeDir, '.openclaw', 'workspace');
+    researchWorkspace = path.join(homeDir, '.openclaw', 'workspace-research');
+    await fs.mkdir(tmpDir, { recursive: true });
     // Create a MEMORY.md in the tmpDir so getWorkspaceRoot returns tmpDir
     await fs.writeFile(path.join(tmpDir, 'MEMORY.md'), '# Memories\n');
   });
 
   afterEach(async () => {
     vi.restoreAllMocks();
-    await fs.rm(tmpDir, { recursive: true, force: true });
+    await fs.rm(homeDir, { recursive: true, force: true });
   });
 
-  async function buildApp() {
+  async function buildApp(opts?: { fileBrowserRoot?: string }) {
+    vi.resetModules();
     vi.doMock('../lib/config.js', () => ({
       config: {
-        auth: false, port: 3000, host: '127.0.0.1', sslPort: 3443,
+        auth: false,
+        port: 3000,
+        host: '127.0.0.1',
+        sslPort: 3443,
+        home: homeDir,
         memoryPath: path.join(tmpDir, 'MEMORY.md'),
+        memoryDir: path.join(tmpDir, 'memory'),
+        fileBrowserRoot: opts?.fileBrowserRoot ?? '',
       },
       SESSION_COOKIE_NAME: 'nerve_session_3000',
     }));
@@ -76,6 +88,40 @@ describe('file-browser routes', () => {
       const names = json.entries.map(e => e.name);
       expect(names).not.toContain('node_modules');
       expect(names).not.toContain('.git');
+    });
+  });
+
+  describe('GET /api/files/resolve', () => {
+    it('classifies workspace files as openable targets', async () => {
+      await fs.writeFile(path.join(tmpDir, 'docs-note.md'), '# hi');
+      const app = await buildApp();
+
+      const res = await app.request('/api/files/resolve?path=docs-note.md');
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { ok: boolean; path: string; type: string; binary: boolean };
+      expect(json).toEqual({ ok: true, path: 'docs-note.md', type: 'file', binary: false });
+    });
+
+    it('classifies workspace directories as revealable targets', async () => {
+      await fs.mkdir(path.join(tmpDir, 'docs'), { recursive: true });
+      const app = await buildApp();
+
+      const res = await app.request('/api/files/resolve?path=docs');
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { ok: boolean; path: string; type: string; binary: boolean };
+      expect(json).toEqual({ ok: true, path: 'docs', type: 'directory', binary: false });
+    });
+
+    it('returns 404 for safe missing targets inside the workspace root', async () => {
+      const app = await buildApp();
+      const res = await app.request('/api/files/resolve?path=missing-note.md');
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 403 for invalid or excluded targets', async () => {
+      const app = await buildApp();
+      const res = await app.request('/api/files/resolve?path=../../etc');
+      expect(res.status).toBe(403);
     });
   });
 
@@ -364,6 +410,283 @@ describe('file-browser routes', () => {
       });
 
       expect(restoreRes.status).toBe(409);
+    });
+
+    it('uses normal trash behavior when FILE_BROWSER_ROOT is not set', async () => {
+      await fs.writeFile(path.join(tmpDir, 'test.txt'), 'test content');
+
+      const app = await buildApp();
+      const res = await app.request('/api/files/trash', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: 'test.txt' }),
+      });
+
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { ok: boolean; from: string; to: string; undoTtlMs?: number };
+      expect(json.ok).toBe(true);
+      expect(json.from).toBe('test.txt');
+      expect(json.to.startsWith('.trash/')).toBe(true);
+      expect(json.undoTtlMs).toBeGreaterThan(0);
+
+      // Verify file is moved to trash, not deleted
+      const originalPath = path.join(tmpDir, 'test.txt');
+      await expect(fs.readFile(originalPath, 'utf-8')).rejects.toThrow();
+
+      const trashPath = path.join(tmpDir, json.to);
+      await expect(fs.readFile(trashPath, 'utf-8')).resolves.toBe('test content');
+    });
+  });
+
+  describe('agent-scoped workspaces', () => {
+    it('lists only files from the requested agent workspace', async () => {
+      await fs.mkdir(researchWorkspace, { recursive: true });
+      await fs.writeFile(path.join(tmpDir, 'main-only.md'), 'main');
+      await fs.writeFile(path.join(researchWorkspace, 'research-only.md'), 'research');
+
+      const app = await buildApp();
+      const res = await app.request('/api/files/tree?agentId=research');
+
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { ok: boolean; entries: Array<{ name: string }> };
+      const names = json.entries.map((entry) => entry.name);
+      expect(names).toContain('research-only.md');
+      expect(names).not.toContain('main-only.md');
+    });
+
+    it('reads files from the requested agent workspace', async () => {
+      await fs.mkdir(researchWorkspace, { recursive: true });
+      await fs.writeFile(path.join(tmpDir, 'notes.md'), 'main notes');
+      await fs.writeFile(path.join(researchWorkspace, 'notes.md'), 'research notes');
+
+      const app = await buildApp();
+      const res = await app.request('/api/files/read?agentId=research&path=notes.md');
+
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { ok: boolean; content: string };
+      expect(json.ok).toBe(true);
+      expect(json.content).toBe('research notes');
+    });
+
+    it('serves raw assets from the requested agent workspace', async () => {
+      await fs.mkdir(researchWorkspace, { recursive: true });
+      const mainBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00]);
+      const researchBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01]);
+      await fs.writeFile(path.join(tmpDir, 'photo.png'), mainBytes);
+      await fs.writeFile(path.join(researchWorkspace, 'photo.png'), researchBytes);
+
+      const app = await buildApp();
+      const res = await app.request('/api/files/raw?agentId=research&path=photo.png');
+
+      expect(res.status).toBe(200);
+      expect(Buffer.from(await res.arrayBuffer())).toEqual(researchBytes);
+    });
+
+    it('writes files into the requested agent workspace', async () => {
+      await fs.mkdir(researchWorkspace, { recursive: true });
+      await fs.writeFile(path.join(tmpDir, 'notes.md'), 'main notes');
+
+      const app = await buildApp();
+      const res = await app.request('/api/files/write', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId: 'research', path: 'notes.md', content: 'research notes' }),
+      });
+
+      expect(res.status).toBe(200);
+      await expect(fs.readFile(path.join(researchWorkspace, 'notes.md'), 'utf-8')).resolves.toBe('research notes');
+      await expect(fs.readFile(path.join(tmpDir, 'notes.md'), 'utf-8')).resolves.toBe('main notes');
+    });
+
+    it('bootstraps the first write into a fresh agent workspace', async () => {
+      const app = await buildApp();
+      const res = await app.request('/api/files/write', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId: 'research', path: 'notes.md', content: 'research notes' }),
+      });
+
+      expect(res.status).toBe(200);
+      await expect(fs.readFile(path.join(researchWorkspace, 'notes.md'), 'utf-8')).resolves.toBe('research notes');
+      await expect(fs.access(path.join(tmpDir, 'notes.md'))).rejects.toThrow();
+    });
+
+    it('keeps rename, move, trash, and restore scoped to the requested agent workspace', async () => {
+      await fs.mkdir(researchWorkspace, { recursive: true });
+      await fs.mkdir(path.join(tmpDir, 'archive'), { recursive: true });
+      await fs.mkdir(path.join(researchWorkspace, 'archive'), { recursive: true });
+      await fs.writeFile(path.join(tmpDir, 'draft.md'), 'main draft');
+      await fs.writeFile(path.join(researchWorkspace, 'draft.md'), 'research draft');
+
+      const app = await buildApp();
+
+      const renameRes = await app.request('/api/files/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId: 'research', path: 'draft.md', newName: 'renamed.md' }),
+      });
+      expect(renameRes.status).toBe(200);
+      await expect(fs.readFile(path.join(researchWorkspace, 'renamed.md'), 'utf-8')).resolves.toBe('research draft');
+      await expect(fs.readFile(path.join(tmpDir, 'draft.md'), 'utf-8')).resolves.toBe('main draft');
+
+      const moveRes = await app.request('/api/files/move', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId: 'research', sourcePath: 'renamed.md', targetDirPath: 'archive' }),
+      });
+      expect(moveRes.status).toBe(200);
+      await expect(fs.readFile(path.join(researchWorkspace, 'archive', 'renamed.md'), 'utf-8')).resolves.toBe('research draft');
+      await expect(fs.access(path.join(tmpDir, 'archive', 'renamed.md'))).rejects.toThrow();
+
+      const trashRes = await app.request('/api/files/trash', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId: 'research', path: 'archive/renamed.md' }),
+      });
+      expect(trashRes.status).toBe(200);
+      const trashJson = (await trashRes.json()) as { ok: boolean; to: string };
+      expect(trashJson.ok).toBe(true);
+      expect(trashJson.to.startsWith('.trash/')).toBe(true);
+      await expect(fs.readFile(path.join(tmpDir, 'draft.md'), 'utf-8')).resolves.toBe('main draft');
+
+      const restoreRes = await app.request('/api/files/restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentId: 'research', path: trashJson.to }),
+      });
+      expect(restoreRes.status).toBe(200);
+      await expect(fs.readFile(path.join(researchWorkspace, 'archive', 'renamed.md'), 'utf-8')).resolves.toBe('research draft');
+      await expect(fs.readFile(path.join(tmpDir, 'draft.md'), 'utf-8')).resolves.toBe('main draft');
+    });
+  });
+
+  describe('workspace info in tree response', () => {
+    it('includes workspace info when FILE_BROWSER_ROOT is not set', async () => {
+      await fs.writeFile(path.join(tmpDir, 'test.md'), '# Test');
+
+      const app = await buildApp();
+      const res = await app.request('/api/files/tree');
+      expect(res.status).toBe(200);
+
+      const json = (await res.json()) as {
+        ok: boolean;
+        entries: Array<{ name: string; type: string }>;
+        workspaceInfo?: { isCustomWorkspace: boolean; rootPath: string };
+      };
+
+      expect(json.ok).toBe(true);
+      expect(json.workspaceInfo).toBeDefined();
+      expect(json.workspaceInfo!.isCustomWorkspace).toBe(false);
+      expect(json.workspaceInfo!.rootPath).toBe(tmpDir);
+    });
+
+    it('includes workspace info when FILE_BROWSER_ROOT is set', async () => {
+      const customRoot = path.join(tmpDir, 'custom-workspace');
+      await fs.mkdir(customRoot);
+      await fs.writeFile(path.join(customRoot, 'test.md'), '# Test');
+
+      const app = await buildApp({ fileBrowserRoot: customRoot });
+      const res = await app.request('/api/files/tree');
+      expect(res.status).toBe(200);
+      
+      const json = (await res.json()) as { 
+        ok: boolean; 
+        entries: Array<{ name: string; type: string }>;
+        workspaceInfo?: { isCustomWorkspace: boolean; rootPath: string };
+      };
+      
+      expect(json.ok).toBe(true);
+      expect(json.workspaceInfo).toBeDefined();
+      expect(json.workspaceInfo).toEqual({
+        isCustomWorkspace: true,
+        rootPath: customRoot,
+      });
+    });
+  });
+
+  describe('POST /api/files/trash with FILE_BROWSER_ROOT', () => {
+    it('permanently deletes when FILE_BROWSER_ROOT is set', async () => {
+      const customRoot = path.join(tmpDir, 'custom-workspace');
+      await fs.mkdir(customRoot);
+      await fs.writeFile(path.join(customRoot, 'test.txt'), 'test content');
+
+      const app = await buildApp({ fileBrowserRoot: customRoot });
+      const res = await app.request('/api/files/trash', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: 'test.txt' }),
+      });
+
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { ok: boolean; from: string; to: string; undoTtlMs?: number };
+      expect(json.ok).toBe(true);
+      expect(json.from).toBe('test.txt');
+      expect(json.to).toBe('');
+      expect(json.undoTtlMs).toBeUndefined();
+
+      // Verify file was actually deleted from filesystem
+      const originalPath = path.join(customRoot, 'test.txt');
+      await expect(fs.readFile(originalPath, 'utf-8')).rejects.toThrow();
+    });
+
+    it('permanently deletes directories when FILE_BROWSER_ROOT is set', async () => {
+      const customRoot = path.join(tmpDir, 'custom-workspace');
+      await fs.mkdir(customRoot);
+      const testDir = path.join(customRoot, 'test-dir');
+      await fs.mkdir(testDir);
+      await fs.writeFile(path.join(testDir, 'file.txt'), 'content');
+
+      const app = await buildApp({ fileBrowserRoot: customRoot });
+      const res = await app.request('/api/files/trash', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: 'test-dir' }),
+      });
+
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { ok: boolean; from: string; to: string; undoTtlMs?: number };
+      expect(json.ok).toBe(true);
+      expect(json.from).toBe('test-dir');
+      expect(json.to).toBe('');
+      expect(json.undoTtlMs).toBeUndefined();
+
+      // Verify directory was actually deleted from filesystem
+      const originalDir = path.join(customRoot, 'test-dir');
+      await expect(fs.access(originalDir)).rejects.toThrow();
+    });
+
+    it('prevents deletion of workspace root with "." path', async () => {
+      const customRoot = path.join(tmpDir, 'custom-workspace');
+      await fs.mkdir(customRoot);
+
+      const app = await buildApp({ fileBrowserRoot: customRoot });
+      const res = await app.request('/api/files/trash', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: '.' }),
+      });
+
+      expect(res.status).toBe(400);
+      const json = (await res.json()) as { ok: boolean; error: string };
+      expect(json.ok).toBe(false);
+      expect(json.error).toBe('Deleting workspace root is not allowed');
+    });
+
+    it('prevents deletion of workspace root with "./" path', async () => {
+      const customRoot = path.join(tmpDir, 'custom-workspace');
+      await fs.mkdir(customRoot);
+
+      const app = await buildApp({ fileBrowserRoot: customRoot });
+      const res = await app.request('/api/files/trash', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: './' }),
+      });
+
+      expect(res.status).toBe(400);
+      const json = (await res.json()) as { ok: boolean; error: string };
+      expect(json.ok).toBe(false);
+      expect(json.error).toBe('Deleting workspace root is not allowed');
     });
   });
 

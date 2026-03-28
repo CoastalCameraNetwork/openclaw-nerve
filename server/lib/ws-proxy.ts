@@ -18,13 +18,13 @@ import type { Server as HttpServer } from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import { execFile } from 'node:child_process';
-import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { config, WS_ALLOWED_HOSTS, SESSION_COOKIE_NAME } from './config.js';
 import { verifySession, parseSessionCookie } from './session.js';
 import { createDeviceBlock, getDeviceIdentity } from './device-identity.js';
-import { resolveOpenclawBin } from './openclaw-bin.js';
+import { gatewayRpcCall } from './gateway-rpc.js';
+import { canInjectGatewayToken } from './trust-utils.js';
+import { isAllowedOrigin } from './origin-utils.js';
 
 /** @internal — exported for test overrides */
 export const _internals = { challengeTimeoutMs: 5_000 };
@@ -39,30 +39,14 @@ const RESTRICTED_METHODS = new Set([
   'sessions.reset',
   'sessions.compact',
 ]);
+const CONTROL_UI_CLIENT_ID = 'openclaw-control-ui';
 
 /**
- * Execute a gateway RPC call via the CLI, bypassing webchat restrictions.
+ * Execute a gateway RPC call, bypassing webchat restrictions.
+ * Delegates to the shared gateway-rpc module.
  */
 function gatewayCall(method: string, params: Record<string, unknown>): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const bin = resolveOpenclawBin();
-    const args = ['gateway', 'call', method, '--params', JSON.stringify(params)];
-    // Ensure nvm/fnm/volta node is in PATH for #!/usr/bin/env node shebangs
-    const nodeBinDir = dirname(process.execPath);
-    const existingPath = process.env.PATH;
-    const env = { ...process.env, PATH: existingPath ? `${nodeBinDir}:${existingPath}` : nodeBinDir };
-    execFile(bin, args, { timeout: 10_000, maxBuffer: 1024 * 1024, env }, (err, stdout, stderr) => {
-      if (err) {
-        reject(new Error(stderr?.trim() || err.message));
-        return;
-      }
-      try {
-        resolve(JSON.parse(stdout));
-      } catch {
-        resolve({ ok: true, raw: stdout.trim() });
-      }
-    });
-  });
+  return gatewayRpcCall(method, params);
 }
 
 /** Active WSS instances — used for graceful shutdown */
@@ -90,6 +74,13 @@ export function setupWebSocketProxy(server: HttpServer | HttpsServer): void {
 
   server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     if (req.url?.startsWith('/ws')) {
+      const originHeader = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin;
+      if (!isAllowedOrigin(originHeader)) {
+        socket.write('HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\nOrigin not allowed');
+        socket.destroy();
+        return;
+      }
+
       // Auth check for WebSocket connections
       if (config.auth) {
         const token = parseSessionCookie(req.headers.cookie, SESSION_COOKIE_NAME);
@@ -139,12 +130,16 @@ export function setupWebSocketProxy(server: HttpServer | HttpsServer): void {
       return;
     }
 
-    // Forward origin header for gateway auth
     const isEncrypted = !!(req.socket as unknown as { encrypted?: boolean }).encrypted;
     const scheme = isEncrypted ? 'https' : 'http';
-    const clientOrigin = req.headers.origin || `${scheme}://${req.headers.host}`;
+    const clientOrigin = (Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin)
+      || `${scheme}://${req.headers.host}`;
 
-    createGatewayRelay(clientWs, targetUrl, clientOrigin, connId);
+    // Determine if the client is trusted enough for token injection.
+    // canInjectGatewayToken accounts for both auth state and loopback detection (proxy-aware).
+    const isTrusted = canInjectGatewayToken(req);
+
+    createGatewayRelay(clientWs, targetUrl, clientOrigin, connId, isTrusted);
   });
 }
 
@@ -165,6 +160,7 @@ function createGatewayRelay(
   targetUrl: URL,
   clientOrigin: string,
   connId: string,
+  isTrusted: boolean,
 ): void {
   const tag = `[ws-proxy:${connId}]`;
   const connStartTime = Date.now();
@@ -207,6 +203,8 @@ function createGatewayRelay(
   let savedConnectMsg: Record<string, unknown> | null = null;
   /** Whether the saved connect message has been dispatched to the gateway */
   let connectSent = false;
+  /** Whether this connection is using the privileged OpenClaw control UI client id */
+  let isControlUiClient = false;
   /** Timeout handle for challenge nonce deadline */
   let challengeTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -245,6 +243,11 @@ function createGatewayRelay(
     }
   }
 
+  function updateClientKindFromConnect(msg: Record<string, unknown>): void {
+    const params = (msg.params || {}) as ConnectParams;
+    isControlUiClient = params.client?.id === CONTROL_UI_CLIENT_ID;
+  }
+
   /**
    * Dispatch the saved connect message to the gateway.
    * Injects device identity when `useDeviceIdentity` is true and a nonce is available.
@@ -254,10 +257,27 @@ function createGatewayRelay(
     if (gwWs.readyState !== WebSocket.OPEN) return;
     connectSent = true;
     clearChallengeTimer();
-    const modified = (useDeviceIdentity && nonce)
-      ? injectDeviceIdentity(savedConnectMsg, nonce)
-      : savedConnectMsg;
-    gwWs.send(JSON.stringify(modified));
+
+    let modified = savedConnectMsg;
+    // Inject gateway token proxy-side for trusted clients if not provided by browser
+    if (isTrusted && config.gatewayToken && !(modified.params as ConnectParams)?.auth?.token) {
+      modified = {
+        ...modified,
+        params: {
+          ...(modified.params as object),
+          auth: {
+            ...((modified.params as ConnectParams)?.auth as object),
+            token: config.gatewayToken,
+          },
+        },
+      };
+    }
+
+    const final = (useDeviceIdentity && nonce)
+      ? injectDeviceIdentity(modified, nonce)
+      : modified;
+
+    gwWs.send(JSON.stringify(final));
     handshakeComplete = true;
     flushPending();
   }
@@ -366,6 +386,7 @@ function createGatewayRelay(
           const msg = JSON.parse(data.toString());
           if (msg.type === 'req' && msg.method === 'connect' && msg.params) {
             savedConnectMsg = msg;
+            updateClientKindFromConnect(msg);
             return; // Do NOT add to pending buffer
           }
         } catch { /* pass through */ }
@@ -387,6 +408,7 @@ function createGatewayRelay(
           if (msg.type === 'req' && msg.method === 'connect' && msg.params) {
             // Last-write-wins if multiple connect frames arrive before dispatch.
             savedConnectMsg = msg;
+            updateClientKindFromConnect(msg);
             if (challengeNonce) {
               dispatchConnect(challengeNonce);
             } else {
@@ -411,6 +433,7 @@ function createGatewayRelay(
         // Intercept connect request — defer until challenge nonce arrives
         if (!handshakeComplete && msg.type === 'req' && msg.method === 'connect' && msg.params) {
           savedConnectMsg = msg;
+          updateClientKindFromConnect(msg);
           if (challengeNonce) {
             dispatchConnect(challengeNonce);
           } else {
@@ -419,8 +442,9 @@ function createGatewayRelay(
           return;
         }
 
-        // Intercept restricted RPC methods — proxy via CLI (full scopes)
-        if (msg.type === 'req' && RESTRICTED_METHODS.has(msg.method)) {
+        // Intercept restricted RPC methods for plain webchat clients only.
+        // Control UI clients are allowed to call these directly on the gateway.
+        if (msg.type === 'req' && RESTRICTED_METHODS.has(msg.method) && !isControlUiClient) {
           const reqId = msg.id;
           gatewayCall(msg.method, msg.params || {})
             .then((result) => {

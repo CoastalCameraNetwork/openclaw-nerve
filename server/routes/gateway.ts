@@ -1,13 +1,12 @@
 /**
  * Gateway API Routes
  *
- * GET  /api/gateway/models       — Returns available models via `openclaw models list`.
- *                                   Respects allowlist if configured; falls back to all available.
+ * GET  /api/gateway/models       — Returns configured models from the active OpenClaw config.
  * GET  /api/gateway/session-info — Returns the current session's runtime info (model, thinking level).
  * POST /api/gateway/session-patch — Change model/effort for a session via HTTP (reliable fallback).
  * POST /api/gateway/restart      — Restart the OpenClaw gateway service via `openclaw gateway restart`.
  *
- * Response (models):       { models: Array<{ id: string; label: string; provider: string }> }
+ * Response (models):       { models: Array<{ id: string; label: string; provider: string; configured: true; role: string }>, error: string | null, source: 'config' }
  * Response (session-info): { model?: string; thinking?: string }
  * Response (session-patch): { ok: boolean; model?: string; thinking?: string; error?: string }
  * Response (restart):      { ok: boolean; output: string }
@@ -15,8 +14,10 @@
 
 import { Hono } from 'hono';
 import { execFile } from 'node:child_process';
-import { homedir } from 'node:os';
+import { readFile } from 'node:fs/promises';
 import { Socket } from 'node:net';
+import { homedir } from 'node:os';
+import path from 'node:path';
 import { z } from 'zod';
 import { invokeGatewayTool } from '../lib/gateway-client.js';
 import { rateLimitGeneral, rateLimitRestart } from '../middleware/rate-limit.js';
@@ -26,150 +27,155 @@ import { config } from '../lib/config.js';
 const app = new Hono();
 
 const GATEWAY_TIMEOUT_MS = 8_000;
+export const MODEL_LIST_TIMEOUT_MS = 15_000;
+const SESSIONS_ACTIVE_MINUTES = 24 * 60;
+const SESSIONS_LIMIT = 200;
 
 export interface GatewayModelInfo {
   id: string;
   label: string;
   provider: string;
+  alias?: string;
+  configured: true;
+  role: 'primary' | 'fallback' | 'allowed';
 }
 
-// ─── Model catalog via `openclaw models list` CLI ──────────────────────────────
-
-/** How long to cache the model catalog (ms). Models don't change often. */
-const MODEL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-
-interface ModelCache {
-  models: GatewayModelInfo[];
-  fetchedAt: number;
-}
-let modelCache: ModelCache | null = null;
-
-interface CliModelEntry {
-  key: string;
-  name?: string;
-  available?: boolean;
-}
-interface CliModelsOutput {
-  models?: CliModelEntry[];
+interface GatewaySessionSummary {
+  sessionKey?: string;
+  key?: string;
+  model?: string;
+  thinking?: string;
+  thinkingLevel?: string;
 }
 
-/** Parse CLI JSON output into GatewayModelInfo[]. 
- *  When `configuredOnly` is true, include all models regardless of `available` flag
- *  (user explicitly configured them). Otherwise filter to available only. */
-function parseModelsOutput(stdout: string, configuredOnly = false): GatewayModelInfo[] {
-  const data = JSON.parse(stdout) as CliModelsOutput;
-  if (!Array.isArray(data.models)) return [];
-  const out: GatewayModelInfo[] = [];
-  for (const m of data.models) {
-    if (!configuredOnly && !m.available) continue;
-    const id = m.key;
-    if (!id) continue;
-    const [provider, ...rest] = id.split('/');
-    out.push({
-      id,
-      label: rest.join('/') || id,
-      provider: provider || 'unknown',
-    });
-  }
-  return out.sort((a, b) => a.id.localeCompare(b.id));
-}
+// ─── Model catalog via active OpenClaw config ──────────────────────────────────
 
 const openclawBin = resolveOpenclawBin();
 
 /** Directory containing the node binary — needed in PATH for `#!/usr/bin/env node` shims. */
 const nodeBinDir = process.execPath.replace(/\/node$/, '');
 
+const CONFIG_READ_ERROR = 'Could not read OpenClaw config.';
+const NO_CONFIGURED_MODELS_ERROR = 'No models configured in OpenClaw config.';
+
+interface OpenClawModelConfigEntry {
+  alias?: string;
+}
+
+interface OpenClawConfig {
+  agents?: {
+    defaults?: {
+      model?: {
+        primary?: string;
+        fallbacks?: string[];
+      };
+      models?: Record<string, OpenClawModelConfigEntry | undefined>;
+    };
+  };
+}
+
 /**
  * Infer the HOME directory for openclaw execution.
  * When server runs as root but openclaw is installed under a user account
  * (e.g., /home/username/.nvm/...), we need to use that user's HOME so openclaw
- * can find its config at ~/.openclaw/config.yaml.
- * 
+ * can find its config at ~/.openclaw/openclaw.json.
+ *
  * Extracts home from paths like:
  *   /home/username/.nvm/... → /home/username
  *   /Users/username/.nvm/... → /Users/username
- * 
+ *
  * Falls back to process.env.HOME if extraction fails.
  */
 function inferOpenclawHome(): string {
-  // Try to extract from openclaw binary path
   const match = openclawBin.match(/^(\/home\/[^/]+|\/Users\/[^/]+)/);
   if (match) return match[1];
-  
-  // Fallback: use actual user home (works for any user, not just root)
+
   return process.env.HOME || homedir();
 }
 
 const openclawHome = inferOpenclawHome();
 
-/** Run `openclaw models list` with the given args. */
-function runModelsList(args: string[]): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(openclawBin, ['models', 'list', ...args], {
-      timeout: GATEWAY_TIMEOUT_MS,
-      maxBuffer: 2 * 1024 * 1024,
-      env: { 
-        ...process.env, 
-        HOME: openclawHome,
-        PATH: `${nodeBinDir}:${process.env.PATH || '/usr/bin:/bin'}` 
-      },
-    }, (err, stdout) => {
-      if (err) reject(err);
-      else resolve(stdout);
-    });
-  });
+function resolveOpenClawConfigPath(): string {
+  return process.env.OPENCLAW_CONFIG_PATH?.trim() || path.join(openclawHome, '.openclaw', 'openclaw.json');
 }
 
-/**
- * Fetch models available for the model selector.
- *
- * Strategy (works for any OpenClaw install):
- * 1. Run `openclaw models list --json` (returns configured/allowlisted models)
- * 2. If that yields ≤1 model (no allowlist, just primary), fall back to
- *    `openclaw models list --all --json` filtered to available models
- *
- * This respects `agents.defaults.models` when configured, and gracefully
- * shows all available models when it isn't.
- */
-async function execOpenclawModels(): Promise<GatewayModelInfo[]> {
-  try {
-    // First: try configured models (respects allowlist)
-    // Always include configured models regardless of `available` flag —
-    // if the user configured them, they should appear.
-    const configured = await runModelsList(['--json']);
-    const models = parseModelsOutput(configured, true);
-    if (models.length > 0) return models;
-
-    // Fallback: no allowlist configured — show all available (filter by available)
-    const all = await runModelsList(['--all', '--json']);
-    const allModels = parseModelsOutput(all, false);
-    if (allModels.length === 0) {
-      console.warn('[gateway/models] openclaw models list returned 0 models.',
-        `Binary: ${openclawBin}, PATH includes: ${nodeBinDir}`);
-    }
-    return allModels;
-  } catch (err) {
-    console.warn('[gateway/models] openclaw models list failed.',
-      `Binary: ${openclawBin}, Error: ${(err as Error).message}`);
-    return [];
-  }
+function normalizeAlias(entry: OpenClawModelConfigEntry | undefined): string | undefined {
+  const alias = entry?.alias;
+  return typeof alias === 'string' && alias.trim() ? alias.trim() : undefined;
 }
 
-/** Get models from cache or fetch fresh. */
-async function getModelCatalog(): Promise<GatewayModelInfo[]> {
-  if (modelCache && Date.now() - modelCache.fetchedAt < MODEL_CACHE_TTL_MS) {
-    return modelCache.models;
+function buildGatewayModelInfo(
+  id: string,
+  role: GatewayModelInfo['role'],
+  entry: OpenClawModelConfigEntry | undefined,
+): GatewayModelInfo {
+  const alias = normalizeAlias(entry);
+  const [provider, ...rest] = id.split('/');
+
+  return {
+    id,
+    label: alias || rest.join('/') || id,
+    provider: provider || 'unknown',
+    ...(alias ? { alias } : {}),
+    configured: true,
+    role,
+  };
+}
+
+function readConfiguredModels(configData: OpenClawConfig): GatewayModelInfo[] {
+  const defaults = configData.agents?.defaults;
+  const modelDefaults = defaults?.model;
+  const allowlist = defaults?.models || {};
+  const seen = new Set<string>();
+  const models: GatewayModelInfo[] = [];
+
+  const addModel = (value: unknown, role: GatewayModelInfo['role']) => {
+    if (typeof value !== 'string' || !value.trim()) return;
+    const id = value.trim();
+    if (seen.has(id)) return;
+    seen.add(id);
+    models.push(buildGatewayModelInfo(id, role, allowlist[id]));
+  };
+
+  addModel(modelDefaults?.primary, 'primary');
+
+  for (const fallback of modelDefaults?.fallbacks || []) {
+    addModel(fallback, 'fallback');
   }
-  const models = await execOpenclawModels();
-  if (models.length > 0) {
-    modelCache = { models, fetchedAt: Date.now() };
+
+  const remainingAllowlistEntries = Object.keys(allowlist)
+    .filter((id) => !seen.has(id))
+    .sort((a, b) => a.localeCompare(b));
+
+  for (const id of remainingAllowlistEntries) {
+    addModel(id, 'allowed');
   }
+
   return models;
 }
 
+async function getModelCatalog(): Promise<{ models: GatewayModelInfo[]; error: string | null }> {
+  const configPath = resolveOpenClawConfigPath();
+
+  try {
+    const raw = await readFile(configPath, 'utf8');
+    const configData = JSON.parse(raw) as OpenClawConfig;
+    const models = readConfiguredModels(configData);
+
+    if (models.length === 0) {
+      return { models: [], error: NO_CONFIGURED_MODELS_ERROR };
+    }
+
+    return { models, error: null };
+  } catch (err) {
+    console.warn('[gateway/models] failed to read configured models from config:', configPath, (err as Error).message);
+    return { models: [], error: CONFIG_READ_ERROR };
+  }
+}
+
 app.get('/api/gateway/models', rateLimitGeneral, async (c) => {
-  const models = await getModelCatalog();
-  return c.json({ models });
+  const { models, error } = await getModelCatalog();
+  return c.json({ models, error, source: 'config' });
 });
 
 /**
@@ -230,14 +236,46 @@ function extractSessionModel(payload: unknown): string | null {
   return null;
 }
 
+function getGatewaySessionKey(session: GatewaySessionSummary): string {
+  return session.sessionKey || session.key || '';
+}
+
+function isTopLevelAgentSessionKey(sessionKey: string): boolean {
+  return /^agent:[^:]+:main$/.test(sessionKey);
+}
+
+function pickPreferredSessionKey(sessions: GatewaySessionSummary[]): string {
+  const explicitMain = sessions.find((session) => getGatewaySessionKey(session) === 'agent:main:main');
+  if (explicitMain) return 'agent:main:main';
+
+  const firstRoot = sessions.find((session) => isTopLevelAgentSessionKey(getGatewaySessionKey(session)));
+  if (firstRoot) return getGatewaySessionKey(firstRoot);
+
+  return getGatewaySessionKey(sessions[0] || {});
+}
+
 app.get('/api/gateway/session-info', rateLimitGeneral, async (c) => {
-  const sessionKey = c.req.query('sessionKey') || 'agent:main:main';
+  const requestedSessionKey = c.req.query('sessionKey')?.trim() || '';
   const info: { model?: string; thinking?: string } = {};
 
   // Primary: fetch per-session data from sessions.list (source of truth for per-session state)
   try {
-    const result = await invokeGatewayTool('sessions_list', { activeMinutes: 120, limit: 50 }, GATEWAY_TIMEOUT_MS) as Record<string, unknown>;
-    const sessions = (result?.sessions as Array<{ sessionKey?: string; key?: string; model?: string; thinking?: string; thinkingLevel?: string }>) || [];
+    const result = await invokeGatewayTool(
+      'sessions_list',
+      { activeMinutes: SESSIONS_ACTIVE_MINUTES, limit: SESSIONS_LIMIT },
+      GATEWAY_TIMEOUT_MS,
+    ) as Record<string, unknown>;
+
+    // sessions_list output shape may vary depending on gateway version:
+    // - { sessions: [...] }
+    // - { details: { sessions: [...] }, ... }
+    const r = result as unknown as { sessions?: unknown; details?: { sessions?: unknown } };
+    const sessions = (Array.isArray(r.sessions)
+      ? r.sessions
+      : Array.isArray(r.details?.sessions)
+        ? r.details?.sessions
+        : []) as GatewaySessionSummary[];
+    const sessionKey = requestedSessionKey || pickPreferredSessionKey(sessions);
     const session = sessions.find(s => (s.sessionKey || s.key) === sessionKey);
     if (session) {
       if (session.model) info.model = session.model;
@@ -300,8 +338,34 @@ app.post('/api/gateway/session-patch', rateLimitGeneral, async (c) => {
     return c.json({ ok: false, error: 'Invalid JSON body' }, 400);
   }
 
-  const sessionKey = body.sessionKey || 'agent:main:main';
+  let sessionKey = body.sessionKey?.trim() || '';
   const result: { ok: boolean; model?: string; thinking?: string; error?: string } = { ok: true };
+
+  if (!sessionKey) {
+    try {
+      const listResult = await invokeGatewayTool(
+        'sessions_list',
+        { activeMinutes: SESSIONS_ACTIVE_MINUTES, limit: SESSIONS_LIMIT },
+        GATEWAY_TIMEOUT_MS,
+      ) as Record<string, unknown>;
+      const r = listResult as { sessions?: unknown; details?: { sessions?: unknown } };
+      const sessions = (Array.isArray(r.sessions)
+        ? r.sessions
+        : Array.isArray(r.details?.sessions)
+          ? r.details?.sessions
+          : []) as GatewaySessionSummary[];
+      sessionKey = pickPreferredSessionKey(sessions);
+    } catch (err) {
+      console.warn('[gateway/session-patch] sessions_list fallback failed:', (err as Error).message);
+    }
+  }
+
+  if (!sessionKey) {
+    return c.json(
+      { ok: false, error: 'No active root session available. Provide sessionKey explicitly.' },
+      409,
+    );
+  }
 
   // Change model via session_status tool (reliable — uses HTTP tools/invoke)
   if (body.model) {

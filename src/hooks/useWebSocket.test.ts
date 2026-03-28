@@ -111,6 +111,38 @@ describe('useWebSocket', () => {
   });
 
   describe('Connect handshake payload', () => {
+    it('should identify as the OpenClaw control UI client', async () => {
+      const wsInstances: MockWebSocket[] = [];
+      const OriginalMockWS = MockWebSocket;
+      (globalThis as unknown as { WebSocket: typeof MockWebSocket }).WebSocket = class extends OriginalMockWS {
+        constructor(url: string) {
+          super(url);
+          wsInstances.push(this);
+        }
+      };
+
+      const { result } = renderHook(() => useWebSocket());
+
+      act(() => {
+        result.current.connect('ws://localhost:8080', 'test-token');
+      });
+
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+
+      const ws = wsInstances[0];
+      act(() => {
+        ws.simulateMessage({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n0' } });
+      });
+
+      const connectReq = getConnectRequest(ws);
+      const client = (connectReq?.params as { client?: { id?: string; mode?: string } } | undefined)?.client;
+
+      expect(client?.id).toBe('openclaw-control-ui');
+      expect(client?.mode).toBe('webchat');
+    });
+
     it('should include a stable per-tab client.instanceId in connect params', async () => {
       const wsInstances: MockWebSocket[] = [];
       const OriginalMockWS = MockWebSocket;
@@ -323,6 +355,67 @@ describe('useWebSocket', () => {
       });
 
       expect(result.current.reconnectAttempt).toBe(0);
+    });
+
+    it('should keep reconnecting after a reconnect auth failure', async () => {
+      const wsInstances: MockWebSocket[] = [];
+      const OriginalMockWS = MockWebSocket;
+      (globalThis as unknown as { WebSocket: typeof MockWebSocket }).WebSocket = class extends OriginalMockWS {
+        constructor(url: string) {
+          super(url);
+          wsInstances.push(this);
+        }
+      };
+
+      const { result } = renderHook(() => useWebSocket());
+
+      act(() => {
+        result.current.connect('ws://localhost:8080', 'test-token');
+      });
+
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+
+      const firstWs = wsInstances[0];
+      act(() => {
+        simulateAuthHandshake(firstWs);
+      });
+
+      act(() => {
+        firstWs.close();
+      });
+
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+
+      expect(wsInstances.length).toBeGreaterThanOrEqual(2);
+      const reconnectWs = wsInstances[1];
+      act(() => {
+        reconnectWs.simulateMessage({ type: 'event', event: 'connect.challenge', payload: { nonce: 'retry-1' } });
+      });
+
+      const reconnectReq = getConnectRequest(reconnectWs);
+      expect(reconnectReq).toBeTruthy();
+      const reconnectReqId = reconnectReq?.id as string;
+
+      act(() => {
+        reconnectWs.simulateMessage({
+          type: 'res',
+          id: reconnectReqId,
+          ok: false,
+          error: { message: 'temporary auth issue' },
+        });
+      });
+
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+
+      expect(result.current.connectionState).toBe('reconnecting');
+      expect(result.current.reconnectAttempt).toBeGreaterThan(0);
+      expect(wsInstances.length).toBeGreaterThanOrEqual(3);
     });
   });
 

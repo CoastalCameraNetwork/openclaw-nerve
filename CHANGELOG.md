@@ -6,48 +6,98 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-03-25
+
+### Fixed
+- Restored the browser websocket auth identity to `webchat-ui` so remote deployments do not trip the gateway's stricter Control UI device-identity requirement on non-secure page origins. This fixes the 1.5.0 login failure reported by users connecting to remote gateway endpoints from plain remote HTTP Nerve pages.
+
+## [1.5.0] - 2026-03-25
+
+### Highlights
+
+**Workspace context now follows the owning top-level agent**. File browser state, Memory, Config, and Skills now switch with the selected top-level agent instead of leaking across agents, and dirty editor tabs now block cross-agent switches with an explicit save / discard / cancel choice (PR #123).
+
+**Agent runtime flows got tighter**. Subagents can now choose whether they stay visible after one-shot runs, subagent deletion is more reliable, the model catalog waits longer on cold starts so configured Codex and other models are more likely to appear in the spawn dialog, and remote or sandboxed workspace access now falls back cleanly through the gateway when local filesystem access is unavailable (PR #119, PR #120, PR #124, PR #145).
+
+**Voice and readability both moved forward**. Xiaomi MiMo joins as a first-class TTS provider, the new global font size control now reaches more of the UI, and small-screen inputs keep a fixed 16px size to avoid mobile auto-zoom regressions (PR #128, PR #129, PR #130).
+
+**Installer, setup, and execution hardening all moved up a notch**. Tailscale setup now supports distinct IP and Serve flows, wake word is disabled on mobile web, setup defaults are stricter around device approval and can infer the agent name from local metadata, and kanban reruns now keep stable identifiers without stale completion state leaking across runs (PR #116, PR #118, PR #122, PR #141, PR #143, PR #151).
+
+**Workspace navigation got smoother**. Markdown and chat workspace path references can now resolve and reveal files safely in the file browser, with follow-up fixes for missing-path semantics and refreshed open handlers (PR #148, PR #149).
+
 ### Added
-
-**Orchestrator Sprints 1-4 Complete** — Full multi-agent coordination with reliability features and intelligent model routing:
-
-- **Sprint 1: Reliability Foundation** (6 tasks)
-  - Hardcoded path resolution via `projectLocalPath` parameter
-  - Optimistic commit counting with `commits: 0` fallback
-  - Structured error handling with `ErrorCode` enum
-  - Registry test coverage (79 passing tests)
-  - Gate enforcement via `buildGateInstructions()`
-  - Recovery tracking with `bumpGeneration()` counter
-
-- **Sprint 2: Orchestrator Core** (4 tasks)
-  - Webhook endpoint `/api/orchestrator/webhook/session-complete` for session capture
-  - Session watcher polling Gateway every 5 seconds
-  - Structured agent handoff with `AgentHandoff` interface and `parseAgentHandoff()`
-  - Reliable output capture with token usage tracking
-  - Proposal parsing via `createProposalsFromFindings()`
-  - Real-time SSE broadcasting via `orchestrator.task_complete` events
-
-- **Sprint 3: Dashboard UI** (4 tasks)
-  - Time-range selector with time-bucketed charts (recharts)
-  - TaskDetailPanel component with execution history
-  - Per-agent token breakdown and cost tracking
-  - Cost budgets with `maxCostUSD` parameter
-
-- **Sprint 4: Intelligent Model Routing** (4 tasks)
-  - Dynamic model selection based on task complexity (`analyzeComplexity()`)
-  - Per-routing-rule model overrides in `agent-registry.ts`
-  - Complexity factors: description length, keywords, multi-agent requirements, domain type
-  - Model priority: rule override → complexity analysis → agent default
-  - `/api/orchestrator/route` endpoint returns recommended model
-  - Model threading through `executeTask()` → `spawnAgentSession()`
-  - Integration test coverage for model routing (24 tests passing)
+- Tailscale IP and Tailscale Serve setup flows in the installer, with matching installer-step documentation (PR #116)
+- An **After run** selector for one-shot subagents, with **Keep** and **Delete** cleanup options (PR #120)
+- **Font size setting** in Appearance settings, adjustable from 10px to 24px via dropdown, stored in `localStorage`, and applied instantly via a CSS custom property (PR #128)
+- **Xiaomi MiMo** as a first-class TTS provider, including API key plumbing, server-side synthesis support, and Audio settings controls for model, voice, and style (PR #129)
+- **Gateway RPC fallback for remote and sandboxed workspace access**, including a sandboxed-workspace notice in the Memory panel when local filesystem access is unavailable (PR #145)
+- **Safe workspace path resolve and reveal** from markdown and chat references into the file browser (PR #148)
 
 ### Changed
+- Workspace scope is now derived from the owning top-level agent, including when viewing subagent sessions (PR #123)
+- File browser tabs, selection state, drafts, Memory, Config, and Skills now persist per top-level agent instead of globally (PR #123)
+- Cross-agent workspace switches now show **Save and switch**, **Discard and switch**, or **Cancel** when dirty editor tabs exist (PR #123)
+- Model catalog fetches now allow a longer cold-start timeout before giving up, so configured Codex and other models appear more reliably in the spawn dialog (PR #124)
+- Mobile web now disables wake word and points users to manual mic activation instead (PR #118)
+- Right sidebar resizing now allows a narrower minimum width (PR #122)
+- Cron list and dialog typography now fully follows the global font size system, with the remaining fixed pixel sizes converted to `rem` units (PR #130)
+- Setup defaults now infer `AGENT_NAME` from local identity metadata when the value is not already explicitly set (PR #151)
 
-- `OrchestratorDashboard` now subscribes to SSE events for real-time auto-refresh on task completion
-- Documentation synced: `skills/orchestrator/SKILL.md` now covers all implemented endpoints and features
-- Routing rules now include `model_override` field for explicit model assignment
-- Security audits, database migrations, and multi-agent deployments default to `qwen3.5-plus`
-- Simple API calls (CDN purge, WordPress plugins) default to `glm-4.5` for cost efficiency
+### Fixed
+- Subagent session deletion no longer fails on the Nerve side when the gateway closes a proxied WebSocket normally during delete flows (PR #119)
+- Agent-scoped workspace switching no longer leaks same-path editor state, save toasts, watcher refreshes, or async file reads across top-level agents (PR #123)
+- Tailscale origin handling is more robust during setup and follow-up gateway patching (PR #116)
+- Small-screen text inputs now stay at 16px so mobile browsers do not auto-zoom the composer and settings controls after font size changes (PR #130)
+- Older top-level agent chats stay visible in the sidebar instead of disappearing once they fall outside the recent-activity query window (PR #134)
+- Kanban runtime data now lives under `${NERVE_DATA_DIR:-~/.nerve}/kanban`, and legacy installs automatically migrate data from old `server-dist/data/kanban` or `server/data/kanban` locations on first run (PR #135)
+- Setup no longer attempts to approve malformed pending device request IDs, and gateway auth validation now uses a working token probe during defaults and check flows (PR #141)
+- Kanban run completion now accepts stable child identifiers, ignores stale client `run` patches, stops stale pollers after reruns, and normalizes spawn session aliases consistently (PR #143)
+- Remote and sandboxed workspace gateway fallback now authenticates correctly with device identity in real OpenShell-style deployments (PR #145)
+- Workspace path resolve now returns `404` for safe missing targets, and markdown file-link handlers refresh when workspace path callbacks change (PR #149)
+
+### Documentation
+- Added a dedicated Tailscale guide for existing installs, linked from the docs index and configuration docs (PR #117)
+- Refreshed the API, architecture, configuration, troubleshooting, and changelog docs to match agent-scoped workspace behavior and newer gateway and file APIs (PR #126)
+- Rewrote the README around current positioning, capabilities, install flow, and embedded demo video, with follow-up formatting and video asset fixes (PR #136)
+
+---
+
+## [1.4.9] — 2026-03-18
+
+### Highlights
+
+**Multi-agent support expanded** — Nerve now supports multiple top-level agents, making multi-agent workflows less awkward and more flexible (PR #111).
+
+**Installer and startup flow hardened** — setup and service startup are now more resilient around edge cases and failure paths (PR #115).
+
+**UX got a broad polish pass** — cron runs, session surfacing, mobile responsiveness, and chat chrome all got tighter and more usable on real screens (PR #112, PR #113, PR #114).
+
+### Added
+- Custom workspace root support via `FILE_BROWSER_ROOT` (PR #92, thanks @jamesjmartin)
+- Server-side token injection for trusted clients (PR #109, thanks @jamesjmartin)
+- Support for multiple top-level agents (PR #111)
+
+### Changed
+- File browser now collapses responsively on mobile layouts (PR #96, thanks @jamesjmartin)
+- Shell, responsive layout, and Kanban UX refined (PR #108)
+- Cron runs, session surfacing, and general UX polished (PR #112)
+- Mobile responsiveness and connect dialog behavior hardened (PR #113)
+- Mobile chat header toggle added for smaller screens (PR #114)
+- Installer edge cases and service startup paths hardened (PR #115)
+- Composer actions aligned to the textarea baseline
+- Docs refreshed for the current gateway auth flow
+
+### Fixed
+- Inotify exhaustion prevented, with better WebSocket reconnect and subagent visibility (PR #102, thanks @DerrickBarra)
+- Invalid paths evicted from the file tree cache (PR #105, thanks @jamesjmartin)
+- Session model transcript 404s avoided (PR #107, thanks @DerrickBarra)
+- Gateway trust boundary and connection auto-connect behavior corrected
+- Infinite reconnect loops on auth failure prevented
+- `Ctrl+B` shortcut handling restored
+- `install.sh` execute permission restored
+- Connect dialog overflow fixed on smaller screens
+- Markdown list markers restored in chat bubbles
+- Operator messages now render right-aligned in chat while keeping message text left-aligned
 
 ---
 

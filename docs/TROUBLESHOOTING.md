@@ -122,8 +122,8 @@ The server detects `EADDRINUSE` and exits with a clear error (see `server/index.
 **Fix:**
 - Verify the gateway is running: `openclaw gateway status`
 - Check token: the server reads `GATEWAY_TOKEN` or `OPENCLAW_GATEWAY_TOKEN` env var
-- For local access, `/api/connect-defaults` auto-provides the token (loopback only)
-- For remote access, the token is NOT auto-provided (security). Enter it manually in the connection dialog
+- For trusted official-gateway access, `/api/connect-defaults` advertises `serverSideAuth=true` and Nerve connects with an empty browser-side token
+- For custom gateway URLs or untrusted access, enter the token manually in the connection dialog
 
 ### Connection drops and "SIGNAL LOST" banner
 
@@ -144,17 +144,21 @@ curl http://127.0.0.1:3080/health
 **Fix:**
 - If gateway is unreachable, restart it: `openclaw gateway restart`
 - If persistent, check firewall rules or network configuration
-- The client stores credentials in `sessionStorage` (cleared on tab close) — if credentials are lost, reconnect manually
+- If a stale manual token is saved in `localStorage`, clear `oc-config` and reload before reconnecting
 
 ### Auto-connect doesn't work
 
 **Symptom:** ConnectDialog appears even though the gateway is running.
 
-**Cause:** The frontend fetches `/api/connect-defaults` on mount. This endpoint only returns the token for loopback clients (127.0.0.1, ::1).
+**Cause:** The frontend fetches `/api/connect-defaults` on mount, but auto-connect only happens when:
+- `serverSideAuth=true`
+- the saved gateway URL is empty or matches the server's official gateway URL
+- the initial connect attempt succeeds
 
 **Fix:**
-- If accessing Nerve remotely (SSH tunnel, reverse proxy), you must enter the gateway URL and token manually
-- Alternatively, set the gateway URL in the connection dialog — the server's WebSocket proxy handles the actual connection
+- If you want the managed path, clear stale browser config (`localStorage.oc-config`) and reload
+- If you are using a custom gateway URL, manual token entry is expected
+- If you are remote but authenticated and using the official gateway URL, the dialog should not be required after stale config is cleared
 
 ---
 
@@ -193,11 +197,11 @@ WS_ALLOWED_HOSTS=mygateway.local npm start
 **Symptom:** Server logs show `[ws-proxy] Gateway closed: code=1008, reason=unauthorized: device token mismatch`.
 
 **Causes:**
-1. **Stale browser token.** The browser caches the gateway token in `sessionStorage`. If the token changes (e.g., after re-running setup or restarting the gateway), the browser still sends the old one.
+1. **Stale browser config.** The browser may still have an old manually-entered token saved in `localStorage` (`oc-config`), often from an older build or a custom gateway connection.
 2. **Token mismatch across config files.** OpenClaw 2026.2.19 has a known bug where `openclaw onboard` writes different tokens to the systemd service file and `openclaw.json`. The gateway uses the systemd env var; Nerve reads from `.env`.
 
-**Fix (stale browser):**
-Close the tab completely and open a fresh one (or use incognito). `sessionStorage` is cleared on tab close.
+**Fix (stale browser config):**
+Clear site data or remove `localStorage.oc-config`, then reload so the official managed gateway path can reconnect with an empty token.
 
 **Fix (token mismatch):**
 Re-run the setup wizard — it reads the real token from the systemd service file and aligns everything:
@@ -252,8 +256,9 @@ After approval, reconnect from the browser (refresh the page or click reconnect)
 1. **Sound enabled?** Check Settings → Audio → Sound toggle is on
 2. **TTS provider configured?** Check Settings → Audio → TTS Provider
 3. **API key present?**
-   - OpenAI: requires `OPENAI_API_KEY` env var
-   - Replicate: requires `REPLICATE_API_TOKEN` env var
+   - OpenAI: requires `OPENAI_API_KEY`
+   - Replicate: requires `REPLICATE_API_TOKEN`
+   - Xiaomi MiMo: requires `MIMO_API_KEY`
    - Edge: no key needed (free)
 4. **Server-side check:**
    ```bash
@@ -261,9 +266,9 @@ After approval, reconnect from the browser (refresh the page or click reconnect)
      -H "Content-Type: application/json" \
      -d '{"text": "hello", "provider": "edge"}'
    ```
-   Should return audio/mpeg binary.
+   Should return playable audio binary.
 
-**Provider auto-fallback:** If no explicit provider is selected, the server tries: OpenAI (if key) → Replicate (if key) → Edge (always available).
+**Provider auto-fallback:** If no explicit provider is selected, the server tries: OpenAI (if key) → Replicate (if key) → Edge (always available). Xiaomi MiMo is explicit-only and is used only when you select the Xiaomi provider.
 
 ### TTS plays old/wrong responses
 
@@ -403,24 +408,30 @@ MEMORY_PATH=/path/to/.openclaw/workspace/MEMORY.md
 
 ### Sessions don't appear in sidebar
 
-**Symptom:** Session list is empty or shows only the main session.
+**Symptom:** Session list is empty, obviously incomplete, or older top-level chats are missing.
 
-**Cause:** Sessions are fetched via gateway RPC `sessions.list` with `activeMinutes: 120` filter.
+**Expected behavior in 1.5.0+:** Older top-level chats should remain visible in the sidebar. They are no longer supposed to disappear just because they fell outside a recent-activity window.
+
+**Likely causes:**
+- Gateway connectivity or auth problems prevented the session list from refreshing
+- The browser is showing stale client state after a reconnect or upgrade
+- A session fetch failed and the sidebar did not recover yet
 
 **Fix:**
-- Sessions inactive for >2 hours won't appear — this is by design
-- Check gateway connectivity (sessions come from the gateway, not local state)
-- Force refresh: click refresh button or Cmd+K → "Refresh Sessions"
+- Check gateway connectivity first, sessions come from the gateway, not local browser state
+- Force refresh with the refresh button or Cmd+K → "Refresh Sessions"
+- Reload the page after upgrades or reconnect storms
+- If the problem persists, inspect browser console and server logs for session-list or WebSocket errors
 
 ### Sub-agent spawn times out
 
 **Symptom:** "Timed out waiting for subagent to spawn" error.
 
-**Cause:** Spawning uses a polling approach — sends a `[spawn-subagent]` chat message to the main session, then polls `sessions.list` every 2s for up to 30s waiting for a new subagent session to appear.
+**Cause:** Spawning uses a polling approach — sends a `[spawn-subagent]` chat message to the selected root session, then polls `sessions.list` every 2s for up to 30s waiting for a new subagent session to appear.
 
 **Fix:**
-- The main agent must be running and able to process the spawn request
-- Check that the main session isn't busy with another task
+- The selected root agent must be running and able to process the spawn request
+- Check that the selected root session isn't busy with another task
 - Check gateway logs for spawn errors
 
 ### Session status stuck on "THINKING"
@@ -442,13 +453,14 @@ MEMORY_PATH=/path/to/.openclaw/workspace/MEMORY.md
 
 **Symptom:** Model selector is empty or shows only the current model.
 
-**Cause:** Models are fetched via `GET /api/gateway/models`, which runs `openclaw models list --json`.
+**Cause:** Models are fetched via `GET /api/gateway/models`. Nerve first runs `openclaw models list --json` for configured / allowlisted models, waits up to 15 seconds for cold starts, and falls back to `openclaw models list --all --json` if needed. If those CLI calls fail or return nothing, the dropdown can stay sparse.
 
 **Fix:**
+- Wait a moment after a cold start, then reopen the spawn dialog or refresh the page
 - Ensure the `openclaw` binary is in PATH (the server searches multiple locations — see `lib/openclaw-bin.ts`)
 - Set `OPENCLAW_BIN` env var to the explicit path
-- Check server logs for model list errors
-- An allowlist can restrict visible models (configured server-side)
+- Check server logs for model list errors or timeouts
+- If you use an allowlist, verify the expected Codex or other models are configured there
 
 ### Model change doesn't take effect
 

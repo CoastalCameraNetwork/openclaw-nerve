@@ -1,6 +1,7 @@
 import { memo, useState, useCallback, useMemo, useRef } from 'react';
 import { LayoutGrid } from 'lucide-react';
 import { DndContext, DragOverlay } from '@dnd-kit/core';
+import { Button } from '@/components/ui/button';
 import type { KanbanTask, TaskStatus } from './types';
 import { COLUMNS } from './types';
 import { KanbanColumn } from './KanbanColumn';
@@ -16,6 +17,8 @@ interface KanbanBoardProps {
   hasAnyTasks: boolean;
   onCreateTask: () => void;
   reorderTask: (id: string, version: number, targetStatus: TaskStatus, targetIndex: number) => Promise<KanbanTask>;
+  /** Visible columns in display order — derived from board config. Falls back to COLUMNS. */
+  boardColumns?: TaskStatus[];
 }
 
 /* ── Loading skeleton ── */
@@ -47,15 +50,18 @@ export const KanbanBoard = memo(function KanbanBoard({
   hasAnyTasks,
   onCreateTask,
   reorderTask,
+  boardColumns: boardColumnsProp,
 }: KanbanBoardProps) {
+  const activeColumns = boardColumnsProp ?? COLUMNS;
+
   /* ── Build flat task list from the tasksByStatus prop ── */
   const propTasks = useMemo(() => {
     const all: KanbanTask[] = [];
-    for (const col of COLUMNS) {
+    for (const col of activeColumns) {
       all.push(...tasksByStatus(col));
     }
     return all;
-  }, [tasksByStatus]);
+  }, [tasksByStatus, activeColumns]);
 
   /* ── Drag override: non-null only during an active drag ── */
   const [dragOverride, setDragOverride] = useState<KanbanTask[] | null>(null);
@@ -77,6 +83,7 @@ export const KanbanBoard = memo(function KanbanBoard({
     tasks: localTasks,
     setTasksOptimistic: setTasksWithDragTracking,
     reorderTask,
+    activeColumns,
     onError: (msg) => {
       // Clear override to fall back to prop data
       setDragOverride(null);
@@ -126,12 +133,9 @@ export const KanbanBoard = memo(function KanbanBoard({
         <div className="max-w-[420px] text-center">
           <p className="text-sm text-destructive font-semibold mb-2">Couldn't load tasks</p>
           <p className="text-xs text-muted-foreground mb-4">{error}</p>
-          <button
-            onClick={onRetry}
-            className="h-[30px] px-4 text-xs font-semibold bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
-          >
+          <Button size="sm" onClick={onRetry} className="text-[0.733rem] uppercase tracking-[0.16em]">
             Retry
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -142,7 +146,7 @@ export const KanbanBoard = memo(function KanbanBoard({
     return (
       <div className="h-full overflow-x-auto">
         <div className="flex gap-3 p-0 min-w-min h-full">
-          {COLUMNS.map(s => <SkeletonColumn key={s} />)}
+          {activeColumns.map(s => <SkeletonColumn key={s} />)}
         </div>
       </div>
     );
@@ -154,16 +158,13 @@ export const KanbanBoard = memo(function KanbanBoard({
       <div className="flex-1 flex items-center justify-center">
         <div className="max-w-[420px] text-center select-none">
           <LayoutGrid size={28} className="mx-auto mb-3 text-primary opacity-60" />
-          <h3 className="text-[16px] font-bold text-foreground mb-1.5">No tasks yet</h3>
-          <p className="text-[13px] text-muted-foreground mb-5">
+          <h3 className="text-[1.067rem] font-bold text-foreground mb-1.5">No tasks yet</h3>
+          <p className="text-[0.867rem] text-muted-foreground mb-5">
             Create your first task or ask an agent to propose one.
           </p>
-          <button
-            onClick={onCreateTask}
-            className="h-8 min-w-[120px] px-5 text-xs font-semibold bg-primary text-primary-foreground rounded-md hover:bg-primary/90 transition-colors"
-          >
+          <Button size="sm" onClick={onCreateTask} className="min-w-[132px] text-[0.733rem] uppercase tracking-[0.16em]">
             Create Task
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -181,7 +182,7 @@ export const KanbanBoard = memo(function KanbanBoard({
     >
       <div className="h-full overflow-x-auto">
         <div className="flex gap-3 p-0 min-w-min h-full">
-          {COLUMNS.map(status => (
+          {activeColumns.map(status => (
             <KanbanColumn
               key={status}
               status={status}

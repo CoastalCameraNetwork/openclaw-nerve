@@ -51,6 +51,7 @@ export const config = {
 
   openaiApiKey: process.env.OPENAI_API_KEY || '',
   replicateApiToken: process.env.REPLICATE_API_TOKEN || '',
+  mimoApiKey: process.env.MIMO_API_KEY || '',
 
   // Speech-to-text
   sttProvider: (process.env.STT_PROVIDER || 'local') as 'local' | 'openai',
@@ -77,10 +78,13 @@ export const config = {
   // Paths (configurable via env, with OpenClaw defaults)
   dist: path.join(PROJECT_ROOT, 'dist'),
   agentLogPath: path.join(PROJECT_ROOT, 'agent-log.json'),
+  fileBrowserRoot: process.env.FILE_BROWSER_ROOT || '',
   memoryPath: process.env.MEMORY_PATH || path.join(HOME, '.openclaw', 'workspace', 'MEMORY.md'),
   memoryDir: process.env.MEMORY_DIR || path.join(HOME, '.openclaw', 'workspace', 'memory'),
   sessionsDir: process.env.SESSIONS_DIR || path.join(HOME, '.openclaw', 'agents', 'main', 'sessions'),
   usageFile: process.env.USAGE_FILE || path.join(HOME, '.openclaw', 'token-usage.json'),
+  workspaceWatchRecursive: process.env.NERVE_WATCH_WORKSPACE_RECURSIVE === 'true',
+  workspaceRemote: process.env.NERVE_WORKSPACE_REMOTE === 'true',
   certPath: path.join(PROJECT_ROOT, 'certs', 'cert.pem'),
   keyPath: path.join(PROJECT_ROOT, 'certs', 'key.pem'),
   bunPath: path.join(HOME, '.bun', 'bin', 'bunx'),
@@ -288,6 +292,19 @@ export function validateConfig(): void {
       }
     } else {
       console.warn(`[config] ⚠ Unknown Whisper model: ${config.whisperModel}`);
+    }
+  }
+
+  // ── FILE_BROWSER_ROOT validation ───────────────────────────────────────
+  if (config.fileBrowserRoot) {
+    try {
+      const stat = fs.statSync(config.fileBrowserRoot);
+      if (!stat.isDirectory()) {
+        throw new Error('FILE_BROWSER_ROOT is not a directory');
+      }
+    } catch {
+      console.warn('[config] ⚠ FILE_BROWSER_ROOT is not a directory or is inaccessible, falling back to default');
+      (config as typeof config & { fileBrowserRoot: string }).fileBrowserRoot = '';
     }
   }
 }

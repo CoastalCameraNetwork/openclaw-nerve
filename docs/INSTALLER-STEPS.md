@@ -28,6 +28,7 @@ It initializes defaults such as:
 - `VERSION` (optional pinned release version)
 - `BRANCH_EXPLICIT` (tracks whether `--branch` was set)
 - `GATEWAY_TOKEN` (optional CLI override)
+- `ACCESS_MODE` (optional explicit setup mode such as `tailscale-ip` or `tailscale-serve`)
 - `ENV_MISSING` (tracks partial installs)
 
 ### 0.3 OS family detection
@@ -54,7 +55,18 @@ Supported flags:
 - `--skip-setup`
 - `--dry-run`
 - `--gateway-token <token>`
+- `--access-mode <mode>`
 - `--help`
+
+Supported `--access-mode` values:
+- `local`
+- `network`
+- `custom`
+- `tailscale-ip`
+- `tailscale-serve`
+
+Backward compatibility:
+- legacy `tailscale` is normalized to `tailscale-ip`
 
 `--version` and `--branch` are mutually exclusive.
 
@@ -64,7 +76,7 @@ Unknown or malformed args exit with error.
 Interactive mode is true if either:
 
 - stdin is a TTY (`-t 0`), or
-- `/dev/tty` is readable+writable
+- `/dev/tty` resolves to a real controlling terminal
 
 This allows prompts even when invoked via `curl | bash`.
 
@@ -93,7 +105,10 @@ The script runs these checks in order:
 ### 1.4 `check_build_tools`
 - Checks for `make` and `g++` (needed for native modules like `node-pty`).
 - If missing:
-  - Debian: auto-installs `build-essential` (unless dry-run)
+  - Debian:
+    - when running as root, auto-installs `build-essential` (unless dry-run)
+    - when running as a normal user, exits with the explicit `sudo apt install build-essential` command
+    - dry-run mirrors that split instead of pretending non-root installs would succeed automatically
   - macOS: triggers Xcode CLI tools install and waits
   - otherwise: prints manual install commands and exits
 
@@ -126,6 +141,9 @@ The installer resolves a target ref before clone/update:
 
 ### 2.3 Real behavior
 - If `INSTALL_DIR/.git` exists:
+  - checks whether the repo has local changes
+  - interactive mode: warns and asks before overwriting them
+  - non-interactive mode: aborts rather than discarding them
   - Branch mode: `git fetch origin <branch>` + checkout + hard reset to `origin/<branch>`
   - Release mode: `git fetch --tags origin` + checkout `<tag>`
 - Else (fresh clone):
@@ -145,25 +163,22 @@ The installer resolves a target ref before clone/update:
   - node-gyp/build tool errors
   - dependency resolve conflicts
 
-### 3.2 Client build
+### 3.2 Project build
 - Runs `npm run build`.
+- This already includes the server build through the package script.
 - On failure: prints last 10 log lines + full path + hints.
 
-### 3.3 Server build
-- Runs `npm run build:server`.
-- On failure: same structured diagnostics.
-
-### 3.4 Temp log cleanup
+### 3.3 Temp log cleanup
 - Deletes npm/build temp log files on success.
 
-### 3.5 Local speech model bootstrap
+### 3.4 Local speech model bootstrap
 - Resolves target model from `.env` `WHISPER_MODEL` (defaults to `base`).
 - Ensures matching file exists in `~/.nerve/models/` (for example `ggml-base.bin`).
 - If missing, downloads the selected model from Hugging Face.
 - If download fails, continues with warning (local STT may fail unless OpenAI STT is configured).
 - Runtime default STT model is `base` (multilingual) unless user overrides `WHISPER_MODEL`.
 
-### 3.6 `ffmpeg` check/install
+### 3.5 `ffmpeg` check/install
 - If `ffmpeg` missing:
   - macOS: warning + brew install hint
   - Debian: attempts apt install
@@ -188,10 +203,17 @@ When called (and `.env` doesn’t already exist), it:
 
 If token missing, it warns and sets `ENV_MISSING=true`.
 
+If token exists but port `3080` is already occupied:
+
+- interactive mode: prompts for an available port
+- if the terminal cannot be read for that prompt, the installer exits instead of looping
+- non-interactive mode: fails cleanly and tells the user to free the port or configure another one
+
 ### 4.2 Configure decision matrix
 
 #### Dry-run
 - Shows simulated setup path only.
+- Exits `0` if the simulation itself succeeds.
 
 #### `--skip-setup`
 - If `.env` exists: keep it.
@@ -206,9 +228,46 @@ If token missing, it warns and sets `ENV_MISSING=true`.
   - run setup wizard
   - if wizard fails, fallback to auto-generate `.env`
 
+Inside the interactive setup wizard, access mode now splits Tailscale into two explicit choices:
+- `tailnet IP`
+- `Tailscale Serve`
+
+Behavior by interactive profile:
+- `tailnet IP`
+  - configures direct tailnet-IP access
+  - keeps Nerve network-reachable
+  - patches gateway allowed origins using the tailnet IP origin
+- `Tailscale Serve`
+  - keeps Nerve on `127.0.0.1`
+  - asks whether to run `tailscale serve --bg 443 http://127.0.0.1:<PORT>`
+  - detects the resulting `https://<node>.tail<id>.ts.net` origin
+  - patches both Nerve and the gateway for that `*.ts.net` origin
+  - if Serve cannot be confirmed, asks whether to fall back to `tailnet IP` or stop
+
+If Tailscale is installed but not logged in:
+- setup guides the operator to run the browser URL login flow with `tailscale up`
+- setup can wait and re-check, or exit and let the user rerun later
+
+If Tailscale is missing:
+- setup explains that clearly
+- prints the install/login next steps
+- exits instead of pretending setup succeeded
+
 #### Non-interactive mode (no `--skip-setup`)
 - If `.env` exists: keep it.
-- If no `.env`: auto-generate from gateway.
+- If no `.env` and no explicit `--access-mode`: auto-generate from gateway.
+- If `--access-mode` is provided:
+  - route through `npm run setup -- --defaults --access-mode <mode>`
+  - do not bypass setup with raw `.env` generation
+
+Non-interactive Tailscale behavior:
+- `--access-mode tailscale-ip`
+  - attempts direct tailnet-IP setup if Tailscale state is usable
+  - otherwise keeps the safest supported config and prints exact follow-up steps
+- `--access-mode tailscale-serve`
+  - never hangs waiting for login or Serve activation
+  - if a usable `*.ts.net` origin is not confirmed, falls back to `tailscale-ip`
+  - if even `tailscale-ip` is not ready, keeps localhost-only config and prints exact follow-up steps
 
 ### 4.3 Gateway config patching (inside setup wizard)
 
@@ -217,8 +276,10 @@ After `.env` is written, the setup wizard detects and applies pending OpenClaw g
 #### Possible changes detected:
 1. **Device scopes** — bootstraps `~/.openclaw/devices/paired.json` with full operator scopes if missing or incomplete
 2. **Pre-pair Nerve device** — registers Nerve's Ed25519 identity in `paired.json` so it can connect without manual `openclaw devices approve`
-3. **Tools allow** — adds `"cron"` and `"gateway"` to `gateway.tools.allow` in `~/.openclaw/openclaw.json` (required for OpenClaw ≥2026.2.23 which denies these tools on `/tools/invoke` by default)
-4. **Allowed origins** — adds Nerve's HTTP/HTTPS origins to `gateway.controlUi.allowedOrigins` (network access modes only)
+3. **Tools allow** — adds `"cron"`, `"gateway"`, and `"sessions_spawn"` to `gateway.tools.allow` in `~/.openclaw/openclaw.json` (required for OpenClaw ≥2026.2.23, which denies these tools on `/tools/invoke` by default; `sessions_spawn` is required for Kanban task execution)
+4. **Allowed origins** — adds all required Nerve browser origins to `gateway.controlUi.allowedOrigins`
+   - LAN or tailnet-IP mode: `http://<ip>:<port>`
+   - Tailscale Serve mode: `https://<node>.tail<id>.ts.net`
 
 #### Interactive mode:
 - Shows a numbered list of all pending changes
@@ -228,8 +289,10 @@ After `.env` is written, the setup wizard detects and applies pending OpenClaw g
 
 #### `--defaults` mode:
 - All changes applied silently (implicit consent)
-- Origins computed automatically from `HOST` and `PORT`
-- Treats any non-loopback HOST as network mode
+- Allowed origins come from the computed setup access plan, not just `HOST` and `PORT`
+- `--access-mode tailscale-ip` and `--access-mode tailscale-serve` are supported explicitly
+- legacy `--access-mode tailscale` maps to `tailscale-ip`
+- if `tailscale-serve` cannot confirm a usable `*.ts.net` origin, defaults mode falls back to the safest supported path and prints follow-up steps
 
 #### Post-apply:
 - Single gateway restart after all patches
@@ -286,11 +349,11 @@ Determines service user/home by:
 ### 5B.1 Wrapper script creation
 Creates `<INSTALL_DIR>/start.sh` that:
 
-- sources `.env` at runtime
+- changes into `<INSTALL_DIR>` first so manual invocation resolves `.env` the same way as the service
 - sets `NODE_ENV=production`
 - executes `node server-dist/index.js`
 
-This allows config updates by restarting service (no plist rewrite needed).
+The Node server loads `.env` at runtime, so config updates still take effect on restart without rewriting the plist.
 
 ### 5B.2 Plist creation
 Writes `~/Library/LaunchAgents/com.nerve.server.plist` with:
@@ -331,6 +394,7 @@ Also prints restart/log commands based on platform/service manager.
 
 ### 6.2 Exit semantics
 - `exit 0`: fully configured install (`.env` present)
+- `exit 0`: dry-run completed successfully
 - `exit 2`: partial success (installed, but `.env` missing or unusable)
 - `exit 1`: hard failure in prerequisite/build/etc.
 

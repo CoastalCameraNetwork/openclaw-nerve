@@ -1,20 +1,60 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { getWorkspaceStorageKey } from '@/features/workspace/workspaceScope';
 import type { TreeEntry } from '../types';
 
-const STORAGE_KEY = 'nerve-file-tree-expanded';
+const DEFAULT_AGENT_ID = 'main';
 
-function loadExpandedPaths(): Set<string> {
+function normalizeAgentId(agentId?: string): string {
+  return agentId?.trim() || DEFAULT_AGENT_ID;
+}
+
+function getExpandedStorageKey(agentId: string): string {
+  return getWorkspaceStorageKey('file-tree-expanded', normalizeAgentId(agentId));
+}
+
+function getSelectedStorageKey(agentId: string): string {
+  return getWorkspaceStorageKey('file-tree-selected', normalizeAgentId(agentId));
+}
+
+/** Load expanded paths from localStorage for persistence. */
+function loadExpandedPaths(agentId: string): Set<string> {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(getExpandedStorageKey(agentId));
     if (stored) return new Set(JSON.parse(stored));
-  } catch { /* ignore */ }
+  } catch {
+    // ignore storage errors
+  }
   return new Set<string>();
 }
 
-function saveExpandedPaths(paths: Set<string>) {
+/** Save expanded paths to localStorage for persistence. */
+function saveExpandedPaths(agentId: string, paths: Set<string>) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify([...paths]));
-  } catch { /* ignore */ }
+    localStorage.setItem(getExpandedStorageKey(agentId), JSON.stringify([...paths]));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function loadSelectedPath(agentId: string): string | null {
+  try {
+    return localStorage.getItem(getSelectedStorageKey(agentId));
+  } catch {
+    return null;
+  }
+}
+
+function saveSelectedPath(agentId: string, path: string | null) {
+  try {
+    const storageKey = getSelectedStorageKey(agentId);
+    if (path) {
+      localStorage.setItem(storageKey, path);
+      return;
+    }
+    localStorage.removeItem(storageKey);
+  } catch {
+    // ignore storage errors
+  }
 }
 
 /** Merge freshly loaded children into the tree (immutable update). */
@@ -34,73 +74,168 @@ function mergeChildren(
   });
 }
 
-export function useFileTree() {
+/** Clear cached children for a directory entry and reset to unloaded state */
+function clearEntryFromTree(entries: TreeEntry[], targetPath: string): TreeEntry[] {
+  return entries.map((entry) => {
+    if (entry.path === targetPath && entry.type === 'directory') {
+      return { ...entry, children: null };
+    }
+    if (entry.children && entry.type === 'directory') {
+      return { ...entry, children: clearEntryFromTree(entry.children, targetPath) };
+    }
+    return entry;
+  });
+}
+
+function findEntry(entries: TreeEntry[], targetPath: string): TreeEntry | null {
+  for (const entry of entries) {
+    if (entry.path === targetPath) return entry;
+    if (entry.type === 'directory' && entry.children) {
+      const found = findEntry(entry.children, targetPath);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function buildTreeUrl(dirPath: string, agentId: string): string {
+  const params = new URLSearchParams({ depth: '1', agentId });
+  if (dirPath) params.set('path', dirPath);
+  return `/api/files/tree?${params.toString()}`;
+}
+
+/** Hook for managing file tree state with workspace info and persistence. */
+export function useFileTree(agentId = DEFAULT_AGENT_ID) {
+  const scopedAgentId = normalizeAgentId(agentId);
   const [entries, setEntries] = useState<TreeEntry[]>([]);
+  const entriesRef = useRef<TreeEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(loadExpandedPaths);
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => loadExpandedPaths(scopedAgentId));
+  const [selectedPath, setSelectedPathState] = useState<string | null>(() => loadSelectedPath(scopedAgentId));
   const [loadingPaths, setLoadingPaths] = useState<Set<string>>(new Set());
+  const [workspaceInfo, setWorkspaceInfo] = useState<{ isCustomWorkspace: boolean; rootPath: string } | null>(null);
   const mountedRef = useRef(true);
+  const agentIdRef = useRef(scopedAgentId);
+  const stateOwnerAgentRef = useRef(scopedAgentId);
+  const requestVersionRef = useRef(0);
+  agentIdRef.current = scopedAgentId;
+
+  const ownsVisibleState = stateOwnerAgentRef.current === scopedAgentId;
+  const visibleEntries = ownsVisibleState ? entries : [];
+  const visibleExpandedPaths = ownsVisibleState ? expandedPaths : loadExpandedPaths(scopedAgentId);
+  const visibleSelectedPath = ownsVisibleState ? selectedPath : loadSelectedPath(scopedAgentId);
+  const visibleLoadingPaths = ownsVisibleState ? loadingPaths : new Set<string>();
+  const visibleWorkspaceInfo = ownsVisibleState ? workspaceInfo : null;
+  const visibleLoading = ownsVisibleState ? loading : true;
 
   useEffect(() => {
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
+
+  useEffect(() => {
+    entriesRef.current = entries;
+  }, [entries]);
 
   // Persist expanded paths
   useEffect(() => {
-    saveExpandedPaths(expandedPaths);
-  }, [expandedPaths]);
+    if (stateOwnerAgentRef.current !== scopedAgentId) return;
+    saveExpandedPaths(scopedAgentId, expandedPaths);
+  }, [expandedPaths, scopedAgentId]);
+
+  // Persist selected path
+  useEffect(() => {
+    if (stateOwnerAgentRef.current !== scopedAgentId) return;
+    saveSelectedPath(scopedAgentId, selectedPath);
+  }, [scopedAgentId, selectedPath]);
 
   // Fetch a directory's children
-  const fetchChildren = useCallback(async (dirPath: string): Promise<TreeEntry[] | null> => {
+  const fetchChildren = useCallback(async (
+    dirPath: string,
+    requestAgentId = agentIdRef.current,
+  ): Promise<TreeEntry[] | null> => {
     try {
-      const params = dirPath ? `?path=${encodeURIComponent(dirPath)}&depth=1` : '?depth=1';
-      const res = await fetch(`/api/files/tree${params}`);
-      if (!res.ok) return null;
+      const res = await fetch(buildTreeUrl(dirPath, requestAgentId));
+      if (!res.ok) {
+        if (dirPath && (res.status === 400 || res.status === 404) && agentIdRef.current === requestAgentId) {
+          setExpandedPaths((prev) => {
+            const next = new Set(prev);
+            for (const path of next) {
+              if (path === dirPath || path.startsWith(`${dirPath}/`)) {
+                next.delete(path);
+              }
+            }
+            return next;
+          });
+
+          setEntries((prev) => clearEntryFromTree(prev, dirPath));
+        }
+        return null;
+      }
+
       const data = await res.json();
+      if (data.ok && data.workspaceInfo && mountedRef.current && agentIdRef.current === requestAgentId) {
+        setWorkspaceInfo(data.workspaceInfo);
+      }
       return data.ok ? data.entries : null;
     } catch {
       return null;
     }
   }, []);
 
-  // Initial load
-  const loadRoot = useCallback(async () => {
+  // Initial load and agent changes
+  const loadRoot = useCallback(async (targetAgentId = scopedAgentId) => {
+    const requestAgentId = normalizeAgentId(targetAgentId);
+    if (agentIdRef.current !== requestAgentId) return;
+
+    const requestVersion = ++requestVersionRef.current;
+    const persistedExpandedPaths = loadExpandedPaths(requestAgentId);
+    const persistedSelectedPath = loadSelectedPath(requestAgentId);
+
+    stateOwnerAgentRef.current = requestAgentId;
     setLoading(true);
     setError(null);
-    const children = await fetchChildren('');
-    if (!mountedRef.current) return;
+    setEntries([]);
+    setLoadingPaths(new Set());
+    setWorkspaceInfo(null);
+    setExpandedPaths(persistedExpandedPaths);
+    setSelectedPathState(persistedSelectedPath);
+
+    const children = await fetchChildren('', requestAgentId);
+    if (!mountedRef.current || requestVersionRef.current !== requestVersion || agentIdRef.current !== requestAgentId) return;
 
     if (children) {
-      setEntries(children);
+      let tree = children;
 
-      // Re-expand previously expanded directories
-      const expanded = loadExpandedPaths();
-      if (expanded.size > 0) {
-        // Fetch children for each expanded path (in parallel)
-        const promises = [...expanded].map(async (p) => {
-          const ch = await fetchChildren(p);
-          return ch ? { path: p, children: ch } : null;
+      if (persistedExpandedPaths.size > 0) {
+        const promises = [...persistedExpandedPaths].map(async (path) => {
+          const dirChildren = await fetchChildren(path, requestAgentId);
+          return dirChildren ? { path, children: dirChildren } : null;
         });
         const results = await Promise.all(promises);
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || requestVersionRef.current !== requestVersion || agentIdRef.current !== requestAgentId) return;
 
-        let tree = children;
-        for (const r of results) {
-          if (r) tree = mergeChildren(tree, r.path, r.children);
+        for (const result of results) {
+          if (result) {
+            tree = mergeChildren(tree, result.path, result.children);
+          }
         }
-        setEntries(tree);
       }
+
+      setEntries(tree);
     } else {
       setError('Failed to load file tree');
     }
-    setLoading(false);
-  }, [fetchChildren]);
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- initial data fetch on mount
-  useEffect(() => { void loadRoot(); }, [loadRoot]);
+    setLoading(false);
+  }, [fetchChildren, scopedAgentId]);
+
+  useEffect(() => {
+    void loadRoot();
+  }, [loadRoot]);
 
   const toggleDirectory = useCallback(async (dirPath: string) => {
     setExpandedPaths((prev) => {
@@ -113,27 +248,16 @@ export function useFileTree() {
       return next;
     });
 
-    // If collapsing or children already loaded, just toggle
     if (expandedPaths.has(dirPath)) return;
 
-    // Check if children are already loaded in the tree
-    const findEntry = (es: TreeEntry[], target: string): TreeEntry | null => {
-      for (const e of es) {
-        if (e.path === target) return e;
-        if (e.children) {
-          const found = findEntry(e.children, target);
-          if (found) return found;
-        }
-      }
-      return null;
-    };
     const entry = findEntry(entries, dirPath);
     if (entry?.children !== null && entry?.children !== undefined) return;
 
-    // Fetch children
+    const requestAgentId = agentIdRef.current;
     setLoadingPaths((prev) => new Set([...prev, dirPath]));
-    const children = await fetchChildren(dirPath);
-    if (!mountedRef.current) return;
+    const children = await fetchChildren(dirPath, requestAgentId);
+    if (!mountedRef.current || agentIdRef.current !== requestAgentId) return;
+
     setLoadingPaths((prev) => {
       const next = new Set(prev);
       next.delete(dirPath);
@@ -143,38 +267,42 @@ export function useFileTree() {
     if (children) {
       setEntries((prev) => mergeChildren(prev, dirPath, children));
     }
-  }, [expandedPaths, entries, fetchChildren]);
+  }, [entries, expandedPaths, fetchChildren]);
 
-  const selectFile = useCallback((filePath: string) => {
-    setSelectedPath(filePath);
-  }, []);
+  const selectFile = useCallback((filePath: string, targetAgentId = scopedAgentId) => {
+    const requestAgentId = normalizeAgentId(targetAgentId);
+    if (agentIdRef.current !== requestAgentId) {
+      saveSelectedPath(requestAgentId, filePath);
+      return;
+    }
 
-  const refresh = useCallback(() => {
-    // Clear cached children so everything re-fetches
-    setEntries([]);
-    loadRoot();
-  }, [loadRoot]);
+    setSelectedPathState(filePath);
+  }, [scopedAgentId]);
+
+  const refresh = useCallback((targetAgentId = scopedAgentId) => {
+    void loadRoot(targetAgentId);
+  }, [loadRoot, scopedAgentId]);
 
   /** Refresh a specific directory (or root) when a file changes externally. */
   const refreshDirectory = useCallback(async (dirPath: string) => {
-    const children = await fetchChildren(dirPath);
-    if (!mountedRef.current || !children) return;
+    const requestAgentId = agentIdRef.current;
+    const children = await fetchChildren(dirPath, requestAgentId);
+    if (!mountedRef.current || !children || agentIdRef.current !== requestAgentId) return;
 
     if (!dirPath) {
-      // Root — just replace top-level entries (preserve expanded subdirs)
       setEntries((prev) => {
-        // Keep expanded children from prev, merge with fresh top-level
-        return children.map(fresh => {
-          const existing = prev.find(e => e.path === fresh.path);
+        return children.map((fresh) => {
+          const existing = prev.find((entry) => entry.path === fresh.path);
           if (existing?.children && fresh.type === 'directory') {
             return { ...fresh, children: existing.children };
           }
           return fresh;
         });
       });
-    } else {
-      setEntries((prev) => mergeChildren(prev, dirPath, children));
+      return;
     }
+
+    setEntries((prev) => mergeChildren(prev, dirPath, children));
   }, [fetchChildren]);
 
   /**
@@ -186,22 +314,83 @@ export function useFileTree() {
     const parentDir = changedPath.includes('/')
       ? changedPath.substring(0, changedPath.lastIndexOf('/'))
       : '';
-    // Only refresh if the parent is expanded (or is root)
     if (!parentDir || expandedPaths.has(parentDir)) {
-      refreshDirectory(parentDir);
+      void refreshDirectory(parentDir);
     }
   }, [expandedPaths, refreshDirectory]);
 
+  const ensureDirectoryLoaded = useCallback(async (dirPath: string, requestAgentId = agentIdRef.current) => {
+    const entry = findEntry(entriesRef.current, dirPath);
+    if (entry?.type !== 'directory') return;
+    if (entry.children !== null && entry.children !== undefined) return;
+
+    setLoadingPaths((prev) => new Set([...prev, dirPath]));
+    const children = await fetchChildren(dirPath, requestAgentId);
+    if (!mountedRef.current || agentIdRef.current !== requestAgentId) return;
+
+    setLoadingPaths((prev) => {
+      const next = new Set(prev);
+      next.delete(dirPath);
+      return next;
+    });
+
+    if (children) {
+      setEntries((prev) => {
+        const next = mergeChildren(prev, dirPath, children);
+        entriesRef.current = next;
+        return next;
+      });
+    }
+  }, [fetchChildren]);
+
+  const revealPath = useCallback(async (
+    targetPath: string,
+    kind: 'file' | 'directory',
+    targetAgentId = scopedAgentId,
+  ) => {
+    const requestAgentId = normalizeAgentId(targetAgentId);
+    if (agentIdRef.current !== requestAgentId) {
+      if (kind === 'file') {
+        saveSelectedPath(requestAgentId, targetPath);
+      }
+      return;
+    }
+
+    const normalized = targetPath.replace(/^\.\//, '').replace(/^\/+|\/+$/g, '');
+    if (!normalized) return;
+
+    const segments = normalized.split('/').filter(Boolean);
+    const ancestors = kind === 'directory'
+      ? segments.map((_, index) => segments.slice(0, index + 1).join('/'))
+      : segments.slice(0, -1).map((_, index) => segments.slice(0, index + 1).join('/'));
+
+    for (const dirPath of ancestors) {
+      setExpandedPaths((prev) => {
+        if (prev.has(dirPath)) return prev;
+        const next = new Set(prev);
+        next.add(dirPath);
+        return next;
+      });
+      await ensureDirectoryLoaded(dirPath, requestAgentId);
+    }
+
+    if (kind === 'file') {
+      setSelectedPathState(normalized);
+    }
+  }, [ensureDirectoryLoaded, scopedAgentId]);
+
   return {
-    entries,
-    loading,
+    entries: visibleEntries,
+    loading: visibleLoading,
     error,
-    expandedPaths,
-    selectedPath,
-    loadingPaths,
+    expandedPaths: visibleExpandedPaths,
+    selectedPath: visibleSelectedPath,
+    loadingPaths: visibleLoadingPaths,
+    workspaceInfo: visibleWorkspaceInfo,
     toggleDirectory,
     selectFile,
     refresh,
     handleFileChange,
+    revealPath,
   };
 }

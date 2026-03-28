@@ -16,6 +16,11 @@ export interface TTSVoiceConfig {
   edge: {
     voice: string;
   };
+  xiaomi: {
+    model: string;
+    voice: string;
+    style: string;
+  };
 }
 
 interface UseTTSConfigReturn {
@@ -79,7 +84,7 @@ export function useTTSConfig(): UseTTSConfigReturn {
 
       const patch = { [provider]: { [field]: value } };
       const key = `${provider}.${field}`;
-      const isTextField = field === 'instructions' || field === 'voiceDescription' || field === 'styleInstruction';
+      const isTextField = field === 'instructions' || field === 'voiceDescription' || field === 'styleInstruction' || field === 'style';
 
       if (isTextField) {
         clearTimeout(debounceTimers.current[key]);
