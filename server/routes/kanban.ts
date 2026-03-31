@@ -24,6 +24,8 @@ import {
   InvalidTransitionError,
   ProposalNotFoundError,
   ProposalAlreadyResolvedError,
+  wouldCreateCycle,
+  getDependencyGraph,
 } from '../lib/kanban-store.js';
 import { invokeGatewayTool } from '../lib/gateway-client.js';
 import { parseKanbanMarkers, stripKanbanMarkers } from '../lib/parseMarkers.js';
@@ -943,6 +945,186 @@ app.post('/api/kanban/tasks/:id/reject', rateLimitGeneral, async (c) => {
     return c.json(task);
   } catch (err) {
     return handleWorkflowError(c, err);
+  }
+});
+
+// ── Dependency tracking ──────────────────────────────────────────────
+
+const dependencySchema = z.object({
+  dependsOnId: z.string().min(1).max(200),
+});
+
+// GET /api/kanban/tasks/:id/dependencies
+app.get('/api/kanban/tasks/:id/dependencies', rateLimitGeneral, async (c) => {
+  const store = getKanbanStore();
+  const id = c.req.param('id');
+
+  try {
+    const task = await store.getTask(id);
+    const allTasks = await store.listTasks({ limit: 1000 });
+    const graph = getDependencyGraph(id, allTasks.items);
+    return c.json({
+      taskId: id,
+      dependencies: task.dependencies,
+      graph,
+    });
+  } catch (err) {
+    if (err instanceof TaskNotFoundError) {
+      return c.json({ error: 'not_found', details: `Task not found: ${id}` }, 404);
+    }
+    throw err;
+  }
+});
+
+// POST /api/kanban/tasks/:id/dependency
+app.post('/api/kanban/tasks/:id/dependency', rateLimitGeneral, async (c) => {
+  const store = getKanbanStore();
+  const id = c.req.param('id');
+
+  let body: unknown = {};
+  try {
+    const text = await c.req.text();
+    if (text) body = JSON.parse(text);
+  } catch {
+    return c.json({ error: 'validation_error', details: 'Invalid JSON body' }, 400);
+  }
+
+  const parsed = dependencySchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({
+      error: 'validation_error',
+      details: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+    }, 400);
+  }
+
+  const { dependsOnId } = parsed.data;
+
+  try {
+    const task = await store.getTask(id);
+    const dependsOnTask = await store.getTask(dependsOnId);
+
+    // Check for self-dependency
+    if (id === dependsOnId) {
+      return c.json({
+        error: 'validation_error',
+        details: 'A task cannot depend on itself',
+      }, 400);
+    }
+
+    // Check for cycles
+    const allTasks = await store.listTasks({ limit: 1000 });
+    if (wouldCreateCycle(id, dependsOnId, allTasks.items)) {
+      return c.json({
+        error: 'validation_error',
+        details: 'Adding this dependency would create a cycle',
+      }, 400);
+    }
+
+    // Check if dependency already exists
+    if (task.dependencies?.blocked_by?.includes(dependsOnId)) {
+      return c.json({
+        error: 'validation_error',
+        details: 'Dependency already exists',
+      }, 400);
+    }
+
+    // Add dependency
+    const updatedTask = await store.updateTask(
+      id,
+      task.version,
+      {
+        dependencies: {
+          blocked_by: [...(task.dependencies?.blocked_by ?? []), dependsOnId],
+          blocks: task.dependencies?.blocks ?? [],
+        },
+      },
+      'operator',
+    );
+
+    // Update the reverse relationship (dependsOnTask.blocks)
+    const updatedDependsOn = await store.updateTask(
+      dependsOnId,
+      dependsOnTask.version,
+      {
+        dependencies: {
+          blocked_by: dependsOnTask.dependencies?.blocked_by ?? [],
+          blocks: [...(dependsOnTask.dependencies?.blocks ?? []), id],
+        },
+      },
+      'operator',
+    );
+
+    return c.json({
+      task: updatedTask,
+      dependsOn: updatedDependsOn,
+    });
+  } catch (err) {
+    if (err instanceof TaskNotFoundError) {
+      return c.json({ error: 'not_found', details: 'Referenced task not found' }, 404);
+    }
+    if (err instanceof VersionConflictError) {
+      return c.json({ error: 'conflict', details: 'Task was modified by another process' }, 409);
+    }
+    throw err;
+  }
+});
+
+// DELETE /api/kanban/tasks/:id/dependency/:dependsOnId
+app.delete('/api/kanban/tasks/:id/dependency/:dependsOnId', rateLimitGeneral, async (c) => {
+  const store = getKanbanStore();
+  const id = c.req.param('id');
+  const dependsOnId = c.req.param('dependsOnId');
+
+  try {
+    const task = await store.getTask(id);
+    const dependsOnTask = await store.getTask(dependsOnId);
+
+    // Check if dependency exists
+    if (!task.dependencies?.blocked_by?.includes(dependsOnId)) {
+      return c.json({
+        error: 'not_found',
+        details: 'Dependency not found',
+      }, 404);
+    }
+
+    // Remove dependency
+    const updatedTask = await store.updateTask(
+      id,
+      task.version,
+      {
+        dependencies: {
+          blocked_by: task.dependencies.blocked_by.filter((d) => d !== dependsOnId),
+          blocks: task.dependencies?.blocks ?? [],
+        },
+      },
+      'operator',
+    );
+
+    // Update the reverse relationship
+    const updatedDependsOn = await store.updateTask(
+      dependsOnId,
+      dependsOnTask.version,
+      {
+        dependencies: {
+          blocked_by: dependsOnTask.dependencies?.blocked_by ?? [],
+          blocks: (dependsOnTask.dependencies?.blocks ?? []).filter((d) => d !== id),
+        },
+      },
+      'operator',
+    );
+
+    return c.json({
+      task: updatedTask,
+      dependsOn: updatedDependsOn,
+    });
+  } catch (err) {
+    if (err instanceof TaskNotFoundError) {
+      return c.json({ error: 'not_found', details: 'Referenced task not found' }, 404);
+    }
+    if (err instanceof VersionConflictError) {
+      return c.json({ error: 'conflict', details: 'Task was modified by another process' }, 409);
+    }
+    throw err;
   }
 });
 

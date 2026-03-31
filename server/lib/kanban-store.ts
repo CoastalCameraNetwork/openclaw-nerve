@@ -129,6 +129,12 @@ export interface KanbanTask {
     criticalIssues?: number;
     highIssues?: number;
   };
+
+  // Dependency tracking
+  dependencies?: {
+    blocked_by: string[];  // Task IDs that must complete first
+    blocks: string[];      // Task IDs this task blocks
+  };
 }
 
 export interface KanbanBoardConfig {
@@ -321,6 +327,105 @@ function normalizeTaskPriority(value: unknown): TaskPriority {
     ? (value as TaskPriority)
     : DEFAULT_CONFIG.defaults.priority;
 }
+
+// ── Dependency Tracking ─────────────────────────────────────────────
+
+/**
+ * Check if adding a dependency would create a cycle.
+ * Uses DFS to detect if dependsOnId is reachable from taskId.
+ */
+export function wouldCreateCycle(
+  taskId: string,
+  dependsOnId: string,
+  tasks: KanbanTask[],
+): boolean {
+  const taskMap = new Map(tasks.map((t) => [t.id, t]));
+
+  // If the dependency target doesn't exist yet, no cycle possible
+  if (!taskMap.has(dependsOnId)) {
+    return false;
+  }
+
+  // Self-dependency is always a cycle
+  if (taskId === dependsOnId) {
+    return true;
+  }
+
+  // DFS: can we reach taskId from dependsOnId by following blocked_by edges?
+  const visited = new Set<string>();
+  const stack = [dependsOnId];
+
+  while (stack.length > 0) {
+    const currentId = stack.pop()!;
+    if (currentId === taskId) {
+      return true; // Cycle detected
+    }
+    if (visited.has(currentId)) {
+      continue;
+    }
+    visited.add(currentId);
+
+    const currentTask = taskMap.get(currentId);
+    if (currentTask?.dependencies?.blocked_by) {
+      for (const upstreamId of currentTask.dependencies.blocked_by) {
+        if (!visited.has(upstreamId)) {
+          stack.push(upstreamId);
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Check if a task's dependencies are met (all blocked_by tasks are 'done').
+ */
+export function areDependenciesMet(task: KanbanTask, tasks: KanbanTask[]): boolean {
+  if (!task.dependencies?.blocked_by || task.dependencies.blocked_by.length === 0) {
+    return true;
+  }
+
+  const taskMap = new Map(tasks.map((t) => [t.id, t]));
+  return task.dependencies.blocked_by.every((depId) => {
+    const depTask = taskMap.get(depId);
+    return depTask?.status === 'done';
+  });
+}
+
+/**
+ * Get the dependency graph for a task (upstream and downstream).
+ */
+export function getDependencyGraph(
+  taskId: string,
+  tasks: KanbanTask[],
+): {
+  upstream: { taskId: string; title: string; status: string }[];
+  downstream: { taskId: string; title: string; status: string }[];
+} {
+  const taskMap = new Map(tasks.map((t) => [t.id, t]));
+  const task = taskMap.get(taskId);
+
+  if (!task) {
+    return { upstream: [], downstream: [] };
+  }
+
+  const upstream = (task.dependencies?.blocked_by ?? [])
+    .map((id) => {
+      const t = taskMap.get(id);
+      return t ? { taskId: t.id, title: t.title, status: t.status } : null;
+    })
+    .filter(Boolean) as Array<{ taskId: string; title: string; status: string }>;
+
+  const downstream = (task.dependencies?.blocks ?? [])
+    .map((id) => {
+      const t = taskMap.get(id);
+      return t ? { taskId: t.id, title: t.title, status: t.status } : null;
+    })
+    .filter(Boolean) as Array<{ taskId: string; title: string; status: string }>;
+
+  return { upstream, downstream };
+}
 const DEFAULT_CONFIG: KanbanBoardConfig = {
   columns: [
     { key: 'backlog', title: 'Backlog', visible: true },
@@ -461,6 +566,8 @@ data.tasks = data.tasks.map((task) => {
               sessionId: task.run.sessionId ?? childSessionKey,
             }
           : task.run,
+        // Migration: Initialize dependencies if missing
+        dependencies: task.dependencies ?? { blocked_by: [], blocks: [] },
       };
     });
     data.meta.schemaVersion = CURRENT_SCHEMA_VERSION;
@@ -664,6 +771,10 @@ data.tasks = data.tasks.map((task) => {
         estimateMin: input.estimateMin,
         metadata: input.metadata,
         feedback: [],
+        dependencies: {
+          blocked_by: [],
+          blocks: [],
+        },
       };
 
       data.tasks.push(task);
@@ -698,6 +809,7 @@ data.tasks = data.tasks.map((task) => {
         | 'feedback'
         | 'pr'
         | 'metadata'
+        | 'dependencies'
       >
     >,
     actor?: string,
@@ -714,6 +826,22 @@ data.tasks = data.tasks.map((task) => {
 
       if (patch.status && !isAllowedTaskStatus(patch.status, data.config)) {
         throw new InvalidTaskStatusError(patch.status, getAllowedTaskStatuses(data.config));
+      }
+
+      // Dependency enforcement: if moving to in-progress, check dependencies
+      if (patch.status === 'in-progress' && task.status !== 'in-progress') {
+        if (!areDependenciesMet(task, data.tasks)) {
+          const blockingTasks = (task.dependencies?.blocked_by ?? [])
+            .map((depId) => data.tasks.find((t) => t.id === depId))
+            .filter((t) => t && t.status !== 'done')
+            .map((t) => ({ id: t!.id, title: t!.title, status: t!.status }));
+
+          throw new InvalidTransitionError(
+            task.status,
+            patch.status,
+            `Cannot move task to in-progress: dependencies not met. Blocking tasks: ${blockingTasks.map((t) => t.title).join(', ')}`,
+          );
+        }
       }
 
       // Apply patch
@@ -776,6 +904,22 @@ data.tasks = data.tasks.map((task) => {
 
       if (!isAllowedTaskStatus(targetStatus, data.config)) {
         throw new InvalidTaskStatusError(targetStatus, getAllowedTaskStatuses(data.config));
+      }
+
+      // Dependency enforcement: if moving to in-progress, check dependencies
+      if (targetStatus === 'in-progress' && task.status !== 'in-progress') {
+        if (!areDependenciesMet(task, data.tasks)) {
+          const blockingTasks = (task.dependencies?.blocked_by ?? [])
+            .map((depId) => data.tasks.find((t) => t.id === depId))
+            .filter((t) => t && t.status !== 'done')
+            .map((t) => ({ id: t!.id, title: t!.title, status: t!.status }));
+
+          throw new InvalidTransitionError(
+            task.status,
+            targetStatus,
+            `Cannot move task to in-progress: dependencies not met. Blocking tasks: ${blockingTasks.map((t) => t.title).join(', ')}`,
+          );
+        }
       }
 
       const now = Date.now();
@@ -912,6 +1056,20 @@ data.tasks = data.tasks.map((task) => {
           task.status,
           'in-progress',
           `Cannot execute task in "${task.status}" status; must be "todo" or "backlog"`,
+        );
+      }
+
+      // Dependency enforcement: check if all blocked_by tasks are done
+      if (!areDependenciesMet(task, data.tasks)) {
+        const blockingTasks = (task.dependencies?.blocked_by ?? [])
+          .map((depId) => data.tasks.find((t) => t.id === depId))
+          .filter((t) => t && t.status !== 'done')
+          .map((t) => ({ id: t!.id, title: t!.title, status: t!.status }));
+
+        throw new InvalidTransitionError(
+          task.status,
+          'in-progress',
+          `Cannot execute task: dependencies not met. Blocking tasks: ${blockingTasks.map((t) => t.title).join(', ')}`,
         );
       }
 

@@ -14,6 +14,7 @@ import { getWorkspaceStorageKey } from './workspaceScope';
 import type { Memory } from '@/types';
 
 const MemoryList = lazy(() => import('@/features/dashboard/MemoryList').then(m => ({ default: m.MemoryList })));
+const GoalsDashboard = lazy(() => import('@/features/goals/GoalsDashboard').then(m => ({ default: m.GoalsDashboard })));
 
 const CONFIG_VIEW_KEY = 'nerve-config-view';
 
@@ -92,7 +93,7 @@ const STORAGE_KEY = 'nerve-workspace-tab';
 function getInitialTab(): TabId {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored && ['memory', 'crons', 'config', 'kanban'].includes(stored)) {
+    if (stored && ['memory', 'crons', 'config', 'kanban', 'goals'].includes(stored)) {
       return stored as TabId;
     }
   } catch { /* ignore */ }
@@ -181,6 +182,13 @@ export function WorkspacePanel({
               onOpenBoard={onOpenBoard ?? (() => {})}
               onOpenTask={(task) => onOpenTask ? onOpenTask(task.id) : onOpenBoard?.()}
             />
+          )}
+        </div>
+        <div className={activeTab === 'goals' ? 'h-full' : 'hidden'} hidden={activeTab !== 'goals'} role="tabpanel" id="workspace-tabpanel-goals" aria-labelledby="workspace-tab-goals">
+          {visitedTabs.has('goals') && (
+            <Suspense fallback={<div className="flex items-center justify-center text-muted-foreground text-xs p-4">Loading…</div>}>
+              <GoalsDashboard />
+            </Suspense>
           )}
         </div>
       </div>

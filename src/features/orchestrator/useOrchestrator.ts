@@ -393,3 +393,177 @@ export function useOrchestratorStats(timeRange: string) {
 
   return { stats, loading, error, reload: loadStats };
 }
+
+/**
+ * Response from task action endpoints
+ */
+export interface TaskActionResponse {
+  success: boolean;
+  taskId?: string;
+  message?: string;
+  sessionLabel?: string;
+  commits?: number;
+  error?: string;
+  code?: string;
+}
+
+/**
+ * Hook providing task action handlers (review, fix, approve, reject)
+ */
+export function useTaskActions() {
+  const [loading, setLoading] = useState<Record<string, boolean>>({});
+  const [error, setError] = useState<Record<string, string | null>>({});
+
+  const runReview = useCallback(async (taskId: string): Promise<TaskActionResponse> => {
+    try {
+      setLoading(prev => ({ ...prev, [`${taskId}-review`]: true }));
+      setError(prev => ({ ...prev, [`${taskId}-review`]: null }));
+
+      const response = await fetch(`/api/orchestrator/task/${taskId}/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+
+      return data;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to run review';
+      setError(prev => ({ ...prev, [`${taskId}-review`]: message }));
+      throw err;
+    } finally {
+      setLoading(prev => ({ ...prev, [`${taskId}-review`]: false }));
+    }
+  }, []);
+
+  const fixIssues = useCallback(async (taskId: string): Promise<TaskActionResponse> => {
+    try {
+      setLoading(prev => ({ ...prev, [`${taskId}-fix`]: true }));
+      setError(prev => ({ ...prev, [`${taskId}-fix`]: null }));
+
+      const response = await fetch(`/api/orchestrator/task/${taskId}/fix`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+
+      return data;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to fix issues';
+      setError(prev => ({ ...prev, [`${taskId}-fix`]: message }));
+      throw err;
+    } finally {
+      setLoading(prev => ({ ...prev, [`${taskId}-fix`]: false }));
+    }
+  }, []);
+
+  const rerunReview = useCallback(async (taskId: string): Promise<TaskActionResponse> => {
+    try {
+      setLoading(prev => ({ ...prev, [`${taskId}-rerun`]: true }));
+      setError(prev => ({ ...prev, [`${taskId}-rerun`]: null }));
+
+      const response = await fetch(`/api/orchestrator/task/${taskId}/rerun-review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+
+      return data;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to rerun review';
+      setError(prev => ({ ...prev, [`${taskId}-rerun`]: message }));
+      throw err;
+    } finally {
+      setLoading(prev => ({ ...prev, [`${taskId}-rerun`]: false }));
+    }
+  }, []);
+
+  const approveTask = useCallback(async (taskId: string): Promise<TaskActionResponse> => {
+    try {
+      setLoading(prev => ({ ...prev, [`${taskId}-approve`]: true }));
+      setError(prev => ({ ...prev, [`${taskId}-approve`]: null }));
+
+      const response = await fetch(`/api/orchestrator/task/${taskId}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+
+      return data;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to approve task';
+      setError(prev => ({ ...prev, [`${taskId}-approve`]: message }));
+      throw err;
+    } finally {
+      setLoading(prev => ({ ...prev, [`${taskId}-approve`]: false }));
+    }
+  }, []);
+
+  const rejectTask = useCallback(async (taskId: string): Promise<TaskActionResponse> => {
+    try {
+      setLoading(prev => ({ ...prev, [`${taskId}-reject`]: true }));
+      setError(prev => ({ ...prev, [`${taskId}-reject`]: null }));
+
+      const response = await fetch(`/api/orchestrator/task/${taskId}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+
+      return data;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to reject task';
+      setError(prev => ({ ...prev, [`${taskId}-reject`]: message }));
+      throw err;
+    } finally {
+      setLoading(prev => ({ ...prev, [`${taskId}-reject`]: false }));
+    }
+  }, []);
+
+  const isLoading = useCallback((taskId: string, action: 'review' | 'fix' | 'rerun' | 'approve' | 'reject') => {
+    return loading[`${taskId}-${action}`] || false;
+  }, [loading]);
+
+  const getError = useCallback((taskId: string, action: 'review' | 'fix' | 'rerun' | 'approve' | 'reject') => {
+    return error[`${taskId}-${action}`] || null;
+  }, [error]);
+
+  return {
+    runReview,
+    fixIssues,
+    rerunReview,
+    approveTask,
+    rejectTask,
+    isLoading,
+    getError,
+  };
+}

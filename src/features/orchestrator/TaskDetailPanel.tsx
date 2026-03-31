@@ -7,6 +7,10 @@ import { useState, useEffect, useCallback } from 'react';
 import { X, Clock, CheckCircle2, AlertCircle, FileText, GitPullRequest, User, Play, Square, Loader2, Edit2, Save, MessageSquare } from 'lucide-react';
 import { AGENT_AVATARS } from './OrchestratorDashboard';
 import { TaskChatPanel } from './TaskChatPanel';
+import { useTaskActions } from './useOrchestrator';
+import { DependencyPanel } from '../dependencies/DependencyPanel';
+import { DependencyPicker } from '../dependencies/DependencyPicker';
+import { useDependencies } from '../dependencies/useDependencies';
 
 interface TaskHistory {
   task: {
@@ -82,8 +86,38 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
 
+  // Dependency management
+  const [showDependencyPicker, setShowDependencyPicker] = useState(false);
+  const [allTasks, setAllTasks] = useState<Array<{ id: string; title: string; status: string }>>([]);
+  const { data: dependencyData, addDependency } = useDependencies(taskId);
+
+  // Load all tasks for dependency picker
+  const loadAllTasks = useCallback(async () => {
+    try {
+      const res = await fetch('/api/kanban/tasks?limit=1000', {
+        credentials: 'include',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAllTasks(data.tasks?.items || []);
+      }
+    } catch (err) {
+      console.error('Failed to load tasks for dependency picker:', err);
+    }
+  }, []);
+
+  const handleAddDependency = useCallback(async (dependsOnId: string) => {
+    await addDependency(dependsOnId);
+    setShowDependencyPicker(false);
+  }, [addDependency]);
+
+  // Task action handlers
+  const { runReview, fixIssues, rerunReview, approveTask, rejectTask, isLoading } = useTaskActions();
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+
   const fetchHistory = useCallback(async () => {
     try {
+      setError(null);
       const res = await fetch(`/api/orchestrator/task/${taskId}/history`, {
         credentials: 'include',
       });
@@ -98,8 +132,12 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
         setEditLabels(data.task.labels.join(', '));
         setEditAssignee(data.task.assignee || '');
         setEditVersion(data.task.version || 0);
+      } else {
+        setError(`Failed to load task: ${res.status}`);
       }
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load task history';
+      setError(message);
       console.error('Failed to fetch task history:', err);
     } finally {
       setLoading(false);
@@ -461,6 +499,23 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
             )}
           </section>
 
+          {/* Dependencies */}
+          <section>
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold">Dependencies</h3>
+              <button
+                onClick={() => { loadAllTasks(); setShowDependencyPicker(true); }}
+                className="text-xs text-primary hover:underline"
+              >
+                + Add
+              </button>
+            </div>
+            <DependencyPanel
+              taskId={taskId}
+              onOpenPicker={() => { loadAllTasks(); setShowDependencyPicker(true); }}
+            />
+          </section>
+
           {/* Live Agent Chat */}
           <section>
             <h3 className="text-sm font-semibold mb-3 inline-flex items-center gap-2">
@@ -667,6 +722,185 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
             </section>
           )}
 
+          {/* Next Action - Workflow Buttons */}
+          <section className="pt-4 border-t">
+            <h3 className="text-sm font-semibold mb-3">Next Action</h3>
+            <div className="space-y-3">
+              {/* Action message */}
+              {actionMessage && (
+                <div className="p-2 rounded bg-muted/50 border text-xs text-muted-foreground">
+                  {actionMessage}
+                </div>
+              )}
+
+              {/* In-progress actions */}
+              {history.task.status === 'in-progress' && (
+                <div className="p-3 border rounded-lg bg-muted/30">
+                  <p className="text-xs text-muted-foreground mb-2">Task is currently being executed by agents</p>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const res = await fetch(`/api/orchestrator/cancel/${taskId}`, {
+                          method: 'POST',
+                          credentials: 'include',
+                        });
+                        if (res.ok) {
+                          setActionMessage('Task cancelled');
+                          fetchHistory();
+                        } else {
+                          const data = await res.json();
+                          setActionMessage(`Failed to cancel: ${data.error || 'Unknown error'}`);
+                        }
+                      } catch (err) {
+                        console.error('Failed to cancel task:', err);
+                        setActionMessage(`Failed to cancel: ${err instanceof Error ? err.message : 'Unknown error'}`);
+                      }
+                    }}
+                    disabled={isLoading(taskId, 'review')}
+                    className="text-xs px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-500 text-white font-medium transition-colors disabled:opacity-50 inline-flex items-center gap-1.5"
+                  >
+                    {isLoading(taskId, 'review') ? <Loader2 size={12} className="animate-spin" /> : <Square size={12} />}
+                    Abort Execution
+                  </button>
+                </div>
+              )}
+
+              {/* Review actions */}
+              {history.task.status === 'review' && history.pr && !history.pr.reviewPassed && (
+                <div className="p-3 border rounded-lg bg-muted/30 space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    {history.pr.reviewPassed === false
+                      ? 'Review found issues that need to be fixed'
+                      : 'Task is ready for automated review'}
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={async () => {
+                        try {
+                          const result = await runReview(taskId);
+                          setActionMessage(result.message || 'Review started');
+                          fetchHistory();
+                        } catch (err) {
+                          console.error('Review failed:', err);
+                          setActionMessage(err instanceof Error ? err.message : 'Review failed');
+                        }
+                      }}
+                      disabled={isLoading(taskId, 'review')}
+                      className="text-xs px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 text-white font-medium transition-colors disabled:opacity-50 inline-flex items-center gap-1.5"
+                    >
+                      {isLoading(taskId, 'review') ? <Loader2 size={12} className="animate-spin" /> : <FileText size={12} />}
+                      Run Automated Review
+                    </button>
+                    {history.pr.reviewPassed === false && (
+                      <button
+                        onClick={async () => {
+                          try {
+                            const result = await fixIssues(taskId);
+                            setActionMessage(result.message || 'Fix agent started');
+                            fetchHistory();
+                          } catch (err) {
+                            console.error('Fix failed:', err);
+                            setActionMessage(err instanceof Error ? err.message : 'Fix failed');
+                          }
+                        }}
+                        disabled={isLoading(taskId, 'fix')}
+                        className="text-xs px-3 py-1.5 rounded-md bg-amber-600 hover:bg-amber-500 text-white font-medium transition-colors disabled:opacity-50 inline-flex items-center gap-1.5"
+                      >
+                        {isLoading(taskId, 'fix') ? <Loader2 size={12} className="animate-spin" /> : <Edit2 size={12} />}
+                        Fix Issues
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Rerun review after fixes */}
+              {history.task.status === 'review' && history.pr && history.pr.reviewPassed === false && (
+                <div className="p-3 border rounded-lg bg-muted/30">
+                  <p className="text-xs text-muted-foreground mb-2">Issues were found. After fixing, rerun review</p>
+                  <button
+                    onClick={async () => {
+                      try {
+                        const result = await rerunReview(taskId);
+                        setActionMessage(result.message || 'Re-review started');
+                        fetchHistory();
+                      } catch (err) {
+                        console.error('Re-review failed:', err);
+                        setActionMessage(err instanceof Error ? err.message : 'Re-review failed');
+                      }
+                    }}
+                    disabled={isLoading(taskId, 'rerun')}
+                    className="text-xs px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 text-white font-medium transition-colors disabled:opacity-50 inline-flex items-center gap-1.5"
+                  >
+                    {isLoading(taskId, 'rerun') ? <Loader2 size={12} className="animate-spin" /> : <FileText size={12} />}
+                    Rerun Review
+                  </button>
+                </div>
+              )}
+
+              {/* Approval actions */}
+              {history.task.status === 'review' && history.pr && history.pr.reviewPassed === true && (
+                <div className="p-3 border rounded-lg bg-muted/30 space-y-2">
+                  <p className="text-xs text-muted-foreground">Review passed. Ready for merge approval</p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={async () => {
+                        try {
+                          const result = await approveTask(taskId);
+                          setActionMessage(result.message || 'Task approved for merge');
+                          fetchHistory();
+                        } catch (err) {
+                          console.error('Approval failed:', err);
+                          setActionMessage(err instanceof Error ? err.message : 'Approval failed');
+                        }
+                      }}
+                      disabled={isLoading(taskId, 'approve')}
+                      className="text-xs px-3 py-1.5 rounded-md bg-green-600 hover:bg-green-500 text-white font-medium transition-colors disabled:opacity-50 inline-flex items-center gap-1.5"
+                    >
+                      {isLoading(taskId, 'approve') ? <Loader2 size={12} className="animate-spin" /> : <CheckCircle2 size={12} />}
+                      Approve & Merge
+                    </button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          const result = await rejectTask(taskId);
+                          setActionMessage(result.message || 'Task rejected');
+                          fetchHistory();
+                        } catch (err) {
+                          console.error('Rejection failed:', err);
+                          setActionMessage(err instanceof Error ? err.message : 'Rejection failed');
+                        }
+                      }}
+                      disabled={isLoading(taskId, 'reject')}
+                      className="text-xs px-3 py-1.5 rounded-md bg-red-600 hover:bg-red-500 text-white font-medium transition-colors disabled:opacity-50 inline-flex items-center gap-1.5"
+                    >
+                      {isLoading(taskId, 'reject') ? <Loader2 size={12} className="animate-spin" /> : <AlertCircle size={12} />}
+                      Reject
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Done state */}
+              {history.task.status === 'done' && history.pr && (
+                <div className="p-3 border rounded-lg bg-muted/30">
+                  <p className="text-xs text-muted-foreground mb-2">Task completed and merged</p>
+                  {history.pr.url && (
+                    <a
+                      href={history.pr.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-cyan-400 hover:underline inline-flex items-center gap-1"
+                    >
+                      <GitPullRequest size={12} />
+                      View Merged PR
+                    </a>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+
           {/* Timestamps */}
           <section className="pt-4 border-t">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
@@ -712,6 +946,17 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
           </div>
         </div>
       </div>
+
+      {/* Dependency Picker Modal */}
+      {showDependencyPicker && (
+        <DependencyPicker
+          taskId={taskId}
+          allTasks={allTasks}
+          existingDependencies={dependencyData?.dependencies?.blocked_by ?? []}
+          onOpenChange={setShowDependencyPicker}
+          onSelect={handleAddDependency}
+        />
+      )}
     </div>
   );
 }
