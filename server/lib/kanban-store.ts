@@ -1642,6 +1642,129 @@ data.tasks = data.tasks.map((task) => {
       await this.writeRaw(emptyStore());
     });
   }
+
+  // ── Workflow: Bulk Operations ──────────────────────────────────────
+
+  async bulkAction(
+    taskIds: string[],
+    action: 'approve' | 'reject' | 'move' | 'add_labels' | 'delete',
+    payload?: {
+      status?: TaskStatus;
+      labels?: string[];
+      reason?: string;
+      merge?: boolean;
+    },
+    actor?: string,
+  ): Promise<{
+    results: Array<{ taskId: string; success: boolean; error?: string; blockedBy?: string[] }>;
+    summary: { succeeded: number; skipped: number; failed: number };
+  }> {
+    return this.withStore(async () => {
+      const data = await this.readRaw();
+      const results: Array<{ taskId: string; success: boolean; error?: string; blockedBy?: string[] }> = [];
+      let succeeded = 0;
+      let skipped = 0;
+      let failed = 0;
+
+      for (const taskId of taskIds) {
+        try {
+          const idx = data.tasks.findIndex((t) => t.id === taskId);
+          if (idx === -1) {
+            results.push({ taskId, success: false, error: 'Task not found' });
+            failed++;
+            continue;
+          }
+
+          const task = data.tasks[idx];
+
+          // Check dependencies for move/approve actions
+          if (action === 'move' || action === 'approve') {
+            if (!areDependenciesMet(task, data.tasks)) {
+              const blockingTasks = (task.dependencies?.blocked_by ?? [])
+                .map((depId) => data.tasks.find((t) => t.id === depId))
+                .filter((t) => t && t.status !== 'done');
+              results.push({
+                taskId,
+                success: false,
+                error: 'DEPENDENCY_NOT_MET',
+                blockedBy: blockingTasks.map((t) => t!.id),
+              });
+              skipped++;
+              continue;
+            }
+          }
+
+          // Execute action
+          const now = Date.now();
+          if (action === 'delete') {
+            data.tasks.splice(idx, 1);
+            await this.audit({ ts: now, action: 'delete', taskId, actor });
+          } else if (action === 'add_labels' && payload?.labels) {
+            const updated: KanbanTask = {
+              ...task,
+              labels: [...new Set([...task.labels, ...payload.labels])],
+              updatedAt: now,
+              version: task.version + 1,
+            };
+            data.tasks[idx] = updated;
+            await this.audit({ ts: now, action: 'update', taskId, actor, detail: 'labels' });
+          } else if (action === 'move' && payload?.status) {
+            const maxOrder = data.tasks
+              .filter((t) => t.status === payload.status && t.id !== taskId)
+              .reduce((max, t) => Math.max(max, t.columnOrder), -1);
+            const updated: KanbanTask = {
+              ...task,
+              status: payload.status,
+              columnOrder: maxOrder + 1,
+              updatedAt: now,
+              version: task.version + 1,
+            };
+            data.tasks[idx] = updated;
+            await this.audit({ ts: now, action: 'update', taskId, actor, detail: 'status' });
+          } else if (action === 'approve') {
+            // Move to done
+            const maxOrder = data.tasks
+              .filter((t) => t.status === 'done' && t.id !== taskId)
+              .reduce((max, t) => Math.max(max, t.columnOrder), -1);
+            const updated: KanbanTask = {
+              ...task,
+              status: 'done',
+              columnOrder: maxOrder + 1,
+              updatedAt: now,
+              version: task.version + 1,
+            };
+            data.tasks[idx] = updated;
+            await this.audit({ ts: now, action: 'update', taskId, actor, detail: 'approved' });
+          } else if (action === 'reject' && payload?.reason) {
+            // Move to cancelled with rejection reason
+            const updated: KanbanTask = {
+              ...task,
+              status: 'cancelled',
+              feedback: [...task.feedback, { at: now, by: actor as TaskActor ?? 'operator', note: payload.reason! }],
+              updatedAt: now,
+              version: task.version + 1,
+            };
+            data.tasks[idx] = updated;
+            await this.audit({ ts: now, action: 'update', taskId, actor, detail: 'rejected' });
+          }
+
+          results.push({ taskId, success: true });
+          succeeded++;
+        } catch (err) {
+          console.error(`Bulk action failed for task ${taskId}:`, err);
+          results.push({
+            taskId,
+            success: false,
+            error: err instanceof Error ? err.message : 'Unknown error',
+          });
+          failed++;
+        }
+      }
+
+      await this.writeRaw(data);
+      return { results, summary: { succeeded, skipped, failed } };
+    });
+  }
 }
 
 // ── Singleton ────────────────────────────────────────────────────────

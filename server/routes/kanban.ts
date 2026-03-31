@@ -1128,6 +1128,58 @@ app.delete('/api/kanban/tasks/:id/dependency/:dependsOnId', rateLimitGeneral, as
   }
 });
 
+// ── Bulk Operations ──────────────────────────────────────────────────
+
+const bulkActionSchema = z.object({
+  taskIds: z.array(z.string().min(1).max(200)),
+  action: z.enum(['approve', 'reject', 'move', 'add_labels', 'delete']),
+  payload: z.object({
+    status: taskStatusSchema.optional(),
+    labels: z.array(z.string().max(100)).optional(),
+    reason: z.string().max(1000).optional(),
+    merge: z.boolean().optional(),
+  }).optional(),
+});
+
+// POST /api/kanban/bulk
+app.post('/api/kanban/bulk', rateLimitGeneral, async (c) => {
+  const store = getKanbanStore();
+
+  let body: unknown = {};
+  try {
+    const text = await c.req.text();
+    if (text) body = JSON.parse(text);
+  } catch {
+    return c.json({ error: 'validation_error', details: 'Invalid JSON body' }, 400);
+  }
+
+  const parsed = bulkActionSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({
+      error: 'validation_error',
+      details: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+    }, 400);
+  }
+
+  const { taskIds, action, payload } = parsed.data;
+
+  try {
+    const result = await store.bulkAction(
+      taskIds,
+      action,
+      payload,
+      'operator',
+    );
+    return c.json(result);
+  } catch (err) {
+    console.error('Bulk action failed:', err);
+    return c.json({
+      error: 'internal_error',
+      details: err instanceof Error ? err.message : 'Bulk action failed',
+    }, 500);
+  }
+});
+
 // POST /api/kanban/tasks/:id/abort
 app.post('/api/kanban/tasks/:id/abort', rateLimitGeneral, async (c) => {
   const store = getKanbanStore();
