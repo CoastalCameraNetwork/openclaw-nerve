@@ -48,6 +48,7 @@ import kanbanRoutes from './routes/kanban.js';
 import orchestratorRoutes from './routes/orchestrator.js';
 import goalsRoutes from './routes/goals.js';
 import agentsRoutes from './routes/agents.js';
+import modelsRoutes from './routes/models.js';
 import wowzaStreamsRoutes from './routes/wowza-streams.js';
 // activity routes removed — tab dropped from workspace panel
 
@@ -124,7 +125,7 @@ const routes = [
   gatewayRoutes, connectDefaultsRoutes,
   workspaceRoutes, cronsRoutes, sessionsRoutes, skillsRoutes, filesRoutes, apiKeysRoutes,
   voicePhrasesRoutes, fileBrowserRoutes, channelsRoutes, kanbanRoutes, orchestratorRoutes,
-  goalsRoutes, agentsRoutes, wowzaStreamsRoutes,
+  goalsRoutes, agentsRoutes, modelsRoutes, wowzaStreamsRoutes,
 ];
 for (const route of routes) app.route('/', route);
 
