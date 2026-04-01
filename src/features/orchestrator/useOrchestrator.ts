@@ -75,6 +75,7 @@ export interface CreateTaskParams {
   status?: 'backlog' | 'todo';
   execute_immediately?: boolean;
   maxCostUSD?: number;
+  labels?: string[];
 }
 
 async function fetchWithAuth(url: string, options: RequestInit = {}) {

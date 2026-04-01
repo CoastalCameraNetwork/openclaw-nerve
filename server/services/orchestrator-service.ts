@@ -21,6 +21,7 @@ import {
   type PRInfo,
 } from './github-pr.js';
 import { runAutomatedPRReview, type PRReviewReport } from './pr-review.js';
+import { canExecuteTask } from './dependency-service.js';
 
 export interface OrchestratorTask {
   task_id: string;
@@ -271,6 +272,12 @@ export async function executeTask(
   let worktreePath: string | undefined;
   let prInfo: PRInfo | undefined;
   let reviewReport: PRReviewReport | undefined;
+
+  // Check dependencies before execution
+  const depCheck = await canExecuteTask(taskId);
+  if (!depCheck.canExecute) {
+    throw new Error(`DEPENDENCY_NOT_MET: Cannot execute task ${taskId} - blocked by: ${depCheck.blockedBy?.join(', ')}`);
+  }
 
   // Default to audit-only if not specified (backward compatibility)
   const effectiveGateMode = gateMode ?? 'audit-only';

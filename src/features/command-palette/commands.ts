@@ -23,6 +23,9 @@ export interface CommandActions {
   onRefreshSessions: () => void;
   onRefreshMemory: () => void;
   onSetViewMode?: (mode: ViewMode) => void;
+  onOpenCreateFeatureWizard?: () => void;
+  onOpenReviewPRWizard?: () => void;
+  onOpenDeployWizard?: () => void;
 }
 
 const THEME_LABELS: Record<ThemeName, string> = {
@@ -213,6 +216,28 @@ export function createCommands(actions: CommandActions): Command[] {
         keywords: ['kanban', 'task', 'create', 'new', 'add'],
       },
     ] : []),
+    // Wizards - always available
+    {
+      id: 'wizard-create-feature',
+      label: 'Wizard: Create Feature',
+      action: actions.onOpenCreateFeatureWizard || (() => {}),
+      category: 'wizards' as const,
+      keywords: ['wizard', 'create', 'feature', 'new'],
+    },
+    {
+      id: 'wizard-review-pr',
+      label: 'Wizard: Review PR',
+      action: actions.onOpenReviewPRWizard || (() => {}),
+      category: 'wizards' as const,
+      keywords: ['wizard', 'review', 'pr', 'pull request', 'github'],
+    },
+    {
+      id: 'wizard-deploy',
+      label: 'Wizard: Deploy',
+      action: actions.onOpenDeployWizard || (() => {}),
+      category: 'wizards' as const,
+      keywords: ['wizard', 'deploy', 'deployment', 'release'],
+    },
     ...themeCommands,
     ...fontCommands,
   ];
@@ -222,9 +247,10 @@ const CATEGORY_ORDER: Record<string, number> = {
   actions: 0,
   navigation: 1,
   kanban: 2,
-  settings: 3,
-  appearance: 4,
-  voice: 5,
+  wizards: 3,
+  settings: 4,
+  appearance: 5,
+  voice: 6,
 };
 
 /** Filter commands by fuzzy-matching against a search query. */

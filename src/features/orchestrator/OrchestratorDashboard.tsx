@@ -18,6 +18,7 @@ import { TaskDetailPanel } from './TaskDetailPanel';
 import { ActiveAgentsPanel } from './ActiveAgentsPanel';
 import { DollarSign as DollarSignIcon } from 'lucide-react';
 import { useServerEvents } from '../../hooks/useServerEvents';
+import { TimelineView } from '../timeline';
 
 export type TimeRangeOption = 'today-local' | '24h-rolling' | '48h-rolling' | '72h-rolling' | '7d-rolling' | '14d-rolling' | '30d-rolling' | 'today-utc';
 
@@ -761,6 +762,11 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Timeline View */}
+      <div className="rounded-xl border bg-card">
+        <TimelineView defaultDays={30} />
       </div>
 
       {/* Office Scene */}

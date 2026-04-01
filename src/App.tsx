@@ -48,6 +48,11 @@ import { getWorkspaceAgentId, getWorkspaceRootSessionKey } from '@/features/work
 const SettingsDrawer = lazy(() => import('@/features/settings/SettingsDrawer').then(m => ({ default: m.SettingsDrawer })));
 const CommandPalette = lazy(() => import('@/features/command-palette/CommandPalette').then(m => ({ default: m.CommandPalette })));
 
+// Lazy-loaded wizards
+const CreateFeatureWizard = lazy(() => import('@/features/wizards/CreateFeatureWizard').then(m => ({ default: m.CreateFeatureWizard })));
+const ReviewPRWizard = lazy(() => import('@/features/wizards/ReviewPRWizard').then(m => ({ default: m.ReviewPRWizard })));
+const DeployWizard = lazy(() => import('@/features/wizards/DeployWizard').then(m => ({ default: m.DeployWizard })));
+
 // Lazy-loaded side panels
 const SessionList = lazy(() => import('@/features/sessions/SessionList').then(m => ({ default: m.SessionList })));
 const WorkspacePanel = lazy(() => import('@/features/workspace/WorkspacePanel').then(m => ({ default: m.WorkspacePanel })));
@@ -290,6 +295,11 @@ export default function App({ onLogout }: AppProps) {
   const prevLogCount = useRef(0);
   const chatPanelRef = useRef<ChatPanelHandle>(null);
 
+  // Wizard state
+  const [createFeatureWizardOpen, setCreateFeatureWizardOpen] = useState(false);
+  const [reviewPRWizardOpen, setReviewPRWizardOpen] = useState(false);
+  const [deployWizardOpen, setDeployWizardOpen] = useState(false);
+
   // Gateway restart
   const {
     showGatewayRestartConfirm,
@@ -364,6 +374,11 @@ export default function App({ onLogout }: AppProps) {
 
   const openSpawnDialog = useCallback(() => setSpawnDialogOpen(true), []);
 
+  // Wizard handlers
+  const openCreateFeatureWizard = useCallback(() => setCreateFeatureWizardOpen(true), []);
+  const openReviewPRWizard = useCallback(() => setReviewPRWizardOpen(true), []);
+  const openDeployWizard = useCallback(() => setDeployWizardOpen(true), []);
+
   const commands = useMemo(() => createCommands({
     onNewSession: openSpawnDialog,
     onResetSession: handleReset,
@@ -382,9 +397,12 @@ export default function App({ onLogout }: AppProps) {
     onRefreshSessions: refreshSessions,
     onRefreshMemory: refreshMemories,
     onSetViewMode: setViewMode,
+    onOpenCreateFeatureWizard: openCreateFeatureWizard,
+    onOpenReviewPRWizard: openReviewPRWizard,
+    onOpenDeployWizard: openDeployWizard,
   }), [openSpawnDialog, handleReset, toggleSound, handleAbort, openSettings, openSearch,
     setTheme, setFont, setTtsProvider, handleToggleWakeWord, toggleEvents, toggleLog, toggleTelemetry,
-    refreshSessions, refreshMemories, setViewMode]);
+    refreshSessions, refreshMemories, setViewMode, openCreateFeatureWizard, openReviewPRWizard, openDeployWizard]);
 
   // Keyboard shortcut handlers with useCallback
   const handleOpenPalette = useCallback(() => setPaletteOpen(true), []);
@@ -1013,6 +1031,34 @@ export default function App({ onLogout }: AppProps) {
         onOpenChange={setSpawnDialogOpen}
         onSpawn={handleSpawnSession}
       />
+
+      {/* Wizards */}
+      <PanelErrorBoundary name="Create Feature Wizard">
+        <Suspense fallback={null}>
+          <CreateFeatureWizard
+            open={createFeatureWizardOpen}
+            onOpenChange={setCreateFeatureWizardOpen}
+          />
+        </Suspense>
+      </PanelErrorBoundary>
+
+      <PanelErrorBoundary name="Review PR Wizard">
+        <Suspense fallback={null}>
+          <ReviewPRWizard
+            open={reviewPRWizardOpen}
+            onOpenChange={setReviewPRWizardOpen}
+          />
+        </Suspense>
+      </PanelErrorBoundary>
+
+      <PanelErrorBoundary name="Deploy Wizard">
+        <Suspense fallback={null}>
+          <DeployWizard
+            open={deployWizardOpen}
+            onOpenChange={setDeployWizardOpen}
+          />
+        </Suspense>
+      </PanelErrorBoundary>
     </div>
   );
 }

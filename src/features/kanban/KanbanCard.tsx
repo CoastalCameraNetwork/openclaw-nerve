@@ -48,19 +48,22 @@ interface KanbanCardProps {
   isOverlay?: boolean;
   /** Alias for isOverlay (compat with KanbanBoard) */
   isDragOverlay?: boolean;
+  /** Batch selection */
+  isSelected?: boolean;
+  onToggleSelect?: () => void;
 }
 
-export const KanbanCard = memo(function KanbanCard({ task, onClick, isOverlay, isDragOverlay }: KanbanCardProps) {
+export const KanbanCard = memo(function KanbanCard({ task, onClick, isOverlay, isDragOverlay, isSelected, onToggleSelect }: KanbanCardProps) {
   const overlay = isOverlay || isDragOverlay;
   return overlay ? (
-    <CardContent task={task} onClick={onClick} isDragging isOverlay />
+    <CardContent task={task} onClick={onClick} isDragging isOverlay isSelected={isSelected} onToggleSelect={onToggleSelect} />
   ) : (
-    <SortableCard task={task} onClick={onClick} />
+    <SortableCard task={task} onClick={onClick} isSelected={isSelected} onToggleSelect={onToggleSelect} />
   );
 });
 
 /* ── Sortable wrapper (only used for in-place cards, not overlay) ── */
-function SortableCard({ task, onClick }: { task: KanbanTask; onClick: (task: KanbanTask) => void }) {
+function SortableCard({ task, onClick, isSelected, onToggleSelect }: { task: KanbanTask; onClick: (task: KanbanTask) => void; isSelected?: boolean; onToggleSelect?: () => void }) {
   const {
     attributes,
     listeners,
@@ -77,7 +80,7 @@ function SortableCard({ task, onClick }: { task: KanbanTask; onClick: (task: Kan
 
   return (
     <div ref={setNodeRef} style={style} {...attributes} {...listeners}>
-      <CardContent task={task} onClick={onClick} isDragging={isDragging} />
+      <CardContent task={task} onClick={onClick} isDragging={isDragging} isSelected={isSelected} onToggleSelect={onToggleSelect} />
     </div>
   );
 }
@@ -88,11 +91,15 @@ function CardContent({
   onClick,
   isDragging,
   isOverlay,
+  isSelected,
+  onToggleSelect,
 }: {
   task: KanbanTask;
   onClick: (task: KanbanTask) => void;
   isDragging?: boolean;
   isOverlay?: boolean;
+  isSelected?: boolean;
+  onToggleSelect?: () => void;
 }) {
   const priorityTone = getTaskPriorityTone(task.priority);
   const priorityLabel = getTaskPriorityLabel(task.priority);
@@ -107,8 +114,19 @@ function CardContent({
           : isDragging
             ? 'opacity-30'
             : 'hover:-translate-y-px hover:border-primary/24 hover:bg-card/80 hover:shadow-[0_16px_34px_rgba(0,0,0,0.2)]'
-      }`}
+      } ${isSelected ? 'ring-2 ring-primary border-primary' : ''}`}
     >
+      {/* Checkbox for batch selection */}
+      {onToggleSelect && (
+        <input
+          type="checkbox"
+          checked={isSelected || false}
+          onChange={onToggleSelect}
+          onClick={(e) => e.stopPropagation()}
+          className="absolute top-3 left-3 z-10 h-4 w-4 rounded border-gray-300 text-primary focus:ring-primary cursor-pointer"
+        />
+      )}
+
       {/* Row 1: priority dot + title */}
       <div className="flex items-start gap-2">
         <span
@@ -148,7 +166,7 @@ function CardContent({
         </div>
       )}
 
-      {/* Row 3: meta line (assignee, run status, time) */}
+      {/* Row 4: meta line (assignee, run status, time) */}
       <div className="flex items-center gap-2 mt-1.5 ml-4 text-[0.733rem] text-muted-foreground">
         {task.assignee && (
           <span className="truncate max-w-[100px]">

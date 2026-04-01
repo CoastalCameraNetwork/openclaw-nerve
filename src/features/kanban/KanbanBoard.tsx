@@ -7,6 +7,8 @@ import { COLUMNS } from './types';
 import { KanbanColumn } from './KanbanColumn';
 import { KanbanCard } from './KanbanCard';
 import { useKanbanDragDrop } from './hooks/useKanbanDragDrop';
+import { useBatchSelection } from '../batch/useBatchSelection';
+import { BatchActionBar } from '../batch/BatchActionBar';
 
 interface KanbanBoardProps {
   tasksByStatus: (status: TaskStatus) => KanbanTask[];
@@ -53,6 +55,9 @@ export const KanbanBoard = memo(function KanbanBoard({
   boardColumns: boardColumnsProp,
 }: KanbanBoardProps) {
   const activeColumns = boardColumnsProp ?? COLUMNS;
+
+  // Batch selection hook
+  const { selectedIds, count: selectedCount, isSelected, toggle, clear } = useBatchSelection();
 
   /* ── Build flat task list from the tasksByStatus prop ── */
   const propTasks = useMemo(() => {
@@ -181,6 +186,17 @@ export const KanbanBoard = memo(function KanbanBoard({
       onDragCancel={handleDragCancel}
     >
       <div className="h-full overflow-x-auto">
+        {/* Batch action bar - shown when items selected */}
+        {selectedCount > 0 && (
+          <div className="sticky top-0 z-20 mb-2">
+            <BatchActionBar
+              selectedCount={selectedCount}
+              selectedIds={Array.from(selectedIds)}
+              onClear={clear}
+            />
+          </div>
+        )}
+
         <div className="flex gap-3 p-0 min-w-min h-full">
           {activeColumns.map(status => (
             <KanbanColumn
@@ -188,6 +204,8 @@ export const KanbanBoard = memo(function KanbanBoard({
               status={status}
               tasks={localTasksByStatus(status)}
               onCardClick={onCardClick}
+              isSelected={isSelected}
+              onToggleSelect={toggle}
             />
           ))}
         </div>

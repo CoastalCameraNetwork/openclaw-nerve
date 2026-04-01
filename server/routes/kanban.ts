@@ -1298,4 +1298,21 @@ app.post('/api/kanban/tasks/:id/complete', rateLimitGeneral, async (c) => {
   }
 });
 
+// GET /api/kanban/timeline
+app.get('/api/kanban/timeline', rateLimitGeneral, async (c) => {
+  const store = getKanbanStore();
+  const days = parseInt(c.req.query('days') || '30', 10);
+
+  try {
+    const timeline = await store.getTimelineData(Math.min(days, 90));
+    return c.json(timeline);
+  } catch (err) {
+    console.error('[kanban/timeline] Error:', err);
+    return c.json({
+      error: 'internal_error',
+      details: err instanceof Error ? err.message : 'Failed to load timeline data',
+    }, 500);
+  }
+});
+
 export default app;

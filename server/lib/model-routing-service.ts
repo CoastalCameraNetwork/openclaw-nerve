@@ -114,7 +114,6 @@ export async function routeTask(
   // Manual override takes precedence
   if (manualModel && MODEL_CONFIGS[manualModel]) {
     const statuses = await getAllModelStatuses();
-    const available = statuses.find((s) => s.model === manualModel)?.available ?? false;
 
     return {
       selectedModel: manualModel,

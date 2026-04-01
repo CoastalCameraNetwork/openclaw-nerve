@@ -13,6 +13,9 @@ interface KanbanColumnProps {
   onCardClick: (task: KanbanTask) => void;
   /** Display label for the column. Falls back to COLUMN_LABELS or a title-cased version of the key. */
   label?: string;
+  /** Batch selection */
+  isSelected?: (taskId: string) => boolean;
+  onToggleSelect?: (taskId: string) => void;
 }
 
 /** Derive a human-readable label from a status key as last resort (e.g. "in-progress" → "In Progress"). */
@@ -20,7 +23,14 @@ function labelFromKey(key: string): string {
   return key.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
-export const KanbanColumn = memo(function KanbanColumn({ status, tasks, onCardClick, label }: KanbanColumnProps) {
+export const KanbanColumn = memo(function KanbanColumn({
+  status,
+  tasks,
+  onCardClick,
+  label,
+  isSelected,
+  onToggleSelect,
+}: KanbanColumnProps) {
   const accent = TASK_STATUS_TONE[status] ?? TASK_STATUS_TONE['todo'];
   const displayLabel = label ?? COLUMN_LABELS[status] ?? labelFromKey(status);
 
@@ -66,7 +76,13 @@ export const KanbanColumn = memo(function KanbanColumn({ status, tasks, onCardCl
             </div>
           ) : (
             tasks.map(task => (
-              <KanbanCard key={task.id} task={task} onClick={onCardClick} />
+              <KanbanCard
+                key={task.id}
+                task={task}
+                onClick={onCardClick}
+                isSelected={isSelected?.(task.id)}
+                onToggleSelect={onToggleSelect ? () => onToggleSelect(task.id) : undefined}
+              />
             ))
           )}
         </div>

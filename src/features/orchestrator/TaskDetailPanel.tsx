@@ -11,6 +11,7 @@ import { useTaskActions } from './useOrchestrator';
 import { DependencyPanel } from '../dependencies/DependencyPanel';
 import { DependencyPicker } from '../dependencies/DependencyPicker';
 import { useDependencies } from '../dependencies/useDependencies';
+import { BudgetPanel } from '../budgets';
 
 interface TaskHistory {
   task: {
@@ -514,6 +515,11 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
               taskId={taskId}
               onOpenPicker={() => { loadAllTasks(); setShowDependencyPicker(true); }}
             />
+          </section>
+
+          {/* Budget */}
+          <section>
+            <BudgetPanel taskId={taskId} />
           </section>
 
           {/* Live Agent Chat */}

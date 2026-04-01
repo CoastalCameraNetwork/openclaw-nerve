@@ -1802,6 +1802,86 @@ data.tasks = data.tasks.map((task) => {
       return { results, summary: { succeeded, skipped, failed } };
     });
   }
+
+  // ── Workflow: Timeline Data ──────────────────────────────────────
+
+  /**
+   * Get task timeline data for charts.
+   * Returns daily counts of created and completed tasks.
+   */
+  async getTimelineData(days = 30): Promise<{
+    dates: string[];
+    created: number[];
+    completed: number[];
+    cumulative: { created: number[]; completed: number[] };
+  }> {
+    return this.withStore(async () => {
+      const data = await this.readRaw();
+      const now = Date.now();
+      const msPerDay = 24 * 60 * 60 * 1000;
+      const startDate = now - (days * msPerDay);
+
+      // Initialize daily buckets
+      const dateMap = new Map<string, { created: number; completed: number }>();
+      for (let i = 0; i < days; i++) {
+        const date = new Date(startDate + (i * msPerDay));
+        const dateStr = date.toISOString().split('T')[0];
+        dateMap.set(dateStr, { created: 0, completed: 0 });
+      }
+
+      // Count tasks by date
+      for (const task of data.tasks) {
+        const createdAt = new Date(task.createdAt);
+        const dateStr = createdAt.toISOString().split('T')[0];
+        if (dateMap.has(dateStr)) {
+          const entry = dateMap.get(dateStr)!;
+          entry.created++;
+        }
+
+        // Check if task is done (completed)
+        if (task.status === 'done' && task.run?.endedAt) {
+          const completedAt = new Date(task.run.endedAt);
+          const completedDateStr = completedAt.toISOString().split('T')[0];
+          if (dateMap.has(completedDateStr)) {
+            const entry = dateMap.get(completedDateStr)!;
+            entry.completed++;
+          }
+        }
+      }
+
+      // Build arrays
+      const dates: string[] = [];
+      const created: number[] = [];
+      const completed: number[] = [];
+      const cumulativeCreated: number[] = [];
+      const cumulativeCompleted: number[] = [];
+      let cumCreated = 0;
+      let cumCompleted = 0;
+
+      for (let i = 0; i < days; i++) {
+        const date = new Date(startDate + (i * msPerDay));
+        const dateStr = date.toISOString().split('T')[0];
+        const entry = dateMap.get(dateStr)!;
+        dates.push(dateStr);
+        created.push(entry.created);
+        completed.push(entry.completed);
+        cumCreated += entry.created;
+        cumCompleted += entry.completed;
+        cumulativeCreated.push(cumCreated);
+        cumulativeCompleted.push(cumCompleted);
+      }
+
+      return {
+        dates,
+        created,
+        completed,
+        cumulative: {
+          created: cumulativeCreated,
+          completed: cumulativeCompleted,
+        },
+      };
+    });
+  }
 }
 
 // ── Singleton ────────────────────────────────────────────────────────

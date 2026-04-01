@@ -80,6 +80,7 @@ const startTaskSchema = z.object({
   status: z.enum(['backlog', 'todo']).optional().default('todo'),
   execute_immediately: z.boolean().optional().default(false),
   maxCostUSD: z.number().positive().optional(),
+  labels: z.array(z.string()).optional(),
 });
 
 const routePreviewSchema = z.object({
@@ -101,7 +102,7 @@ app.post('/api/orchestrator/start', rateLimitGeneral, async (c) => {
       return c.json({ error: 'Invalid request', code: ErrorCode.INVALID_REQUEST, details: parsed.error.flatten() }, 400);
     }
 
-    const { title, description, gate_mode, priority, status, execute_immediately, maxCostUSD } = parsed.data;
+    const { title, description, gate_mode, priority, status, execute_immediately, maxCostUSD, labels } = parsed.data;
 
     // Create the orchestrator task
     const task = await startTask({
@@ -114,6 +115,7 @@ app.post('/api/orchestrator/start', rateLimitGeneral, async (c) => {
 
     // Also create in kanban store with agent labels
     const agentLabels = task.agents.map(a => `agent:${a}`);
+    const allLabels = ['orchestrated', ...agentLabels, ...(labels || [])];
     const store = getKanbanStore();
     const kanbanTask = await store.createTask({
       title,
@@ -121,7 +123,7 @@ app.post('/api/orchestrator/start', rateLimitGeneral, async (c) => {
       status: status as 'todo' | 'backlog',
       priority: priority as 'normal',
       createdBy: 'operator' as TaskActor,
-      labels: ['orchestrated', ...agentLabels],
+      labels: allLabels,
       metadata: {
         gate_mode: task.gate_mode,
         sequence: task.sequence,
@@ -134,12 +136,26 @@ app.post('/api/orchestrator/start', rateLimitGeneral, async (c) => {
     // If execute_immediately, spawn agent sessions
     if (execute_immediately) {
       try {
-        await executeTask(kanbanTask.id, description, task.title, task.agents, task.sequence, task.gate_mode, null, task.routing.model);
+        // Detect project from description/labels
+        const project = detectProject(description, allLabels);
+        await executeTask(kanbanTask.id, description, task.title, task.agents, task.sequence, task.gate_mode, project ?? undefined, task.routing.model);
         await store.executeTask(kanbanTask.id, {}, 'operator');
       } catch (execError) {
         console.error('Failed to execute task immediately:', execError);
         // Continue anyway - task is created, can be executed manually
       }
+    }
+
+    // Store project info in metadata for later execution
+    const project = detectProject(description, allLabels);
+    if (project) {
+      await store.updateTask(kanbanTask.id, kanbanTask.version, {
+        metadata: {
+          ...kanbanTask.metadata,
+          projectPath: project.localPath,
+          projectName: project.name,
+        },
+      });
     }
 
     return c.json({
