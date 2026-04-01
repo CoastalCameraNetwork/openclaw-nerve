@@ -218,9 +218,17 @@ export interface TaskFilters {
   priority?: TaskPriority[];
   assignee?: string;
   label?: string;
+  labels?: string[];  // Multiple labels filter
   q?: string;
   limit?: number;
   offset?: number;
+  // Advanced filtering
+  agents?: string[];  // Filter by agent names (assignee prefix)
+  projects?: string[]; // Filter by project metadata
+  createdAfter?: number; // Timestamp
+  createdBefore?: number; // Timestamp
+  updatedAfter?: number; // Timestamp
+  updatedBefore?: number; // Timestamp
 }
 
 // ── Version-conflict error ───────────────────────────────────────────
@@ -677,6 +685,11 @@ data.tasks = data.tasks.map((task) => {
       if (filters.label) {
         tasks = tasks.filter((t) => t.labels.includes(filters.label!));
       }
+      if (filters.labels?.length) {
+        // Multiple labels filter (OR logic)
+        const labelSet = new Set(filters.labels);
+        tasks = tasks.filter((t) => t.labels.some((l) => labelSet.has(l)));
+      }
       if (filters.q) {
         const q = filters.q.toLowerCase();
         tasks = tasks.filter(
@@ -685,6 +698,30 @@ data.tasks = data.tasks.map((task) => {
             (t.description?.toLowerCase().includes(q) ?? false) ||
             t.labels.some((l) => l.toLowerCase().includes(q)),
         );
+      }
+      // Advanced filtering
+      if (filters.agents?.length) {
+        const agentSet = new Set(filters.agents);
+        tasks = tasks.filter((t) => t.assignee && agentSet.has(t.assignee.replace(/^agent:/, '')));
+      }
+      if (filters.projects?.length) {
+        const projectSet = new Set(filters.projects);
+        tasks = tasks.filter((t) => {
+          const project = (t.metadata?.project as string) ?? '';
+          return project && projectSet.has(project);
+        });
+      }
+      if (filters.createdAfter) {
+        tasks = tasks.filter((t) => t.createdAt >= filters.createdAfter!);
+      }
+      if (filters.createdBefore) {
+        tasks = tasks.filter((t) => t.createdAt <= filters.createdBefore!);
+      }
+      if (filters.updatedAfter) {
+        tasks = tasks.filter((t) => t.updatedAt >= filters.updatedAfter!);
+      }
+      if (filters.updatedBefore) {
+        tasks = tasks.filter((t) => t.updatedAt <= filters.updatedBefore!);
       }
 
       const statusOrder = getStatusOrderMap(data.config);

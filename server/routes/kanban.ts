@@ -420,11 +420,44 @@ app.get('/api/kanban/tasks', rateLimitGeneral, async (c) => {
 
   const assignee = url.searchParams.get('assignee') || undefined;
   const label = url.searchParams.get('label') || undefined;
+  const labels = parseArray(url.searchParams.getAll('labels').length > 0
+    ? url.searchParams.getAll('labels')
+    : url.searchParams.get('labels[]') ? url.searchParams.getAll('labels[]') : undefined,
+  ) as string[];
   const q = url.searchParams.get('q') || undefined;
   const limit = url.searchParams.get('limit') ? Number(url.searchParams.get('limit')) : undefined;
   const offset = url.searchParams.get('offset') ? Number(url.searchParams.get('offset')) : undefined;
 
-  const result = await store.listTasks({ status, priority, assignee, label, q, limit, offset });
+  // Advanced filtering
+  const agents = parseArray(url.searchParams.getAll('agents').length > 0
+    ? url.searchParams.getAll('agents')
+    : url.searchParams.get('agents[]') ? url.searchParams.getAll('agents[]') : undefined,
+  ) as string[];
+  const projects = parseArray(url.searchParams.getAll('projects').length > 0
+    ? url.searchParams.getAll('projects')
+    : url.searchParams.get('projects[]') ? url.searchParams.getAll('projects[]') : undefined,
+  ) as string[];
+  const createdAfter = url.searchParams.get('created_after') ? Number(url.searchParams.get('created_after')) : undefined;
+  const createdBefore = url.searchParams.get('created_before') ? Number(url.searchParams.get('created_before')) : undefined;
+  const updatedAfter = url.searchParams.get('updated_after') ? Number(url.searchParams.get('updated_after')) : undefined;
+  const updatedBefore = url.searchParams.get('updated_before') ? Number(url.searchParams.get('updated_before')) : undefined;
+
+  const result = await store.listTasks({
+    status,
+    priority,
+    assignee,
+    label,
+    labels,
+    q,
+    limit,
+    offset,
+    agents,
+    projects,
+    createdAfter,
+    createdBefore,
+    updatedAfter,
+    updatedBefore,
+  });
   return c.json(result);
 });
 
