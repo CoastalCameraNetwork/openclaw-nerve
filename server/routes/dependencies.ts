@@ -22,7 +22,7 @@ const ErrorCode = {
 } as const;
 
 // POST /api/dependencies/:taskId/add
-app.post('/:taskId/add', rateLimitGeneral, async (c) => {
+app.post('/api/dependencies/:taskId/add', rateLimitGeneral, async (c) => {
   try {
     const taskId = c.req.param('taskId');
     const body = await c.req.json();
@@ -82,7 +82,7 @@ app.post('/:taskId/add', rateLimitGeneral, async (c) => {
 });
 
 // POST /api/dependencies/:taskId/remove/:dependsOnId
-app.post('/:taskId/remove/:dependsOnId', rateLimitGeneral, async (c) => {
+app.post('/api/dependencies/:taskId/remove/:dependsOnId', rateLimitGeneral, async (c) => {
   try {
     const taskId = c.req.param('taskId');
     const dependsOnId = c.req.param('dependsOnId');
@@ -118,7 +118,7 @@ app.post('/:taskId/remove/:dependsOnId', rateLimitGeneral, async (c) => {
 });
 
 // GET /api/dependencies/:taskId
-app.get('/:taskId', rateLimitGeneral, async (c) => {
+app.get('/api/dependencies/:taskId', rateLimitGeneral, async (c) => {
   try {
     const taskId = c.req.param('taskId');
     const graph = await getDependencyGraph(taskId);

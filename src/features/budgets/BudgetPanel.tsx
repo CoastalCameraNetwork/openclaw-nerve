@@ -2,7 +2,7 @@
  * BudgetPanel - Display and manage task/goal budget
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { DollarSign, AlertTriangle, PauseCircle } from 'lucide-react';
 import { useBudgets } from './useBudgets';
 
@@ -12,7 +12,14 @@ interface BudgetPanelProps {
 }
 
 export function BudgetPanel({ taskId, goalId }: BudgetPanelProps) {
-  const { budgets, spending, alerts, loadBudgets, createBudget, deleteBudget } = useBudgets(taskId, goalId);
+  const { budgets, spending, alerts, loadBudgets, loadStatus, createBudget, deleteBudget } = useBudgets(taskId, goalId);
+
+  // Load budget status when budgets change
+  useEffect(() => {
+    if (budgets.length > 0) {
+      loadStatus(0); // Will be updated by SSE when task runs
+    }
+  }, [budgets, loadStatus]);
   const [showCreate, setShowCreate] = useState(false);
   const [maxCost, setMaxCost] = useState('');
   const [action, setAction] = useState<'pause' | 'notify'>('pause');

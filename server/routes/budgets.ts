@@ -23,7 +23,7 @@ import {
 const app = new Hono();
 
 // GET /api/orchestrator/budgets
-app.get('/budgets', rateLimitGeneral, async (c) => {
+app.get('/api/orchestrator/budgets', rateLimitGeneral, async (c) => {
   const taskId = c.req.query('taskId');
   const goalId = c.req.query('goalId');
 
@@ -40,7 +40,7 @@ app.get('/budgets', rateLimitGeneral, async (c) => {
 });
 
 // GET /api/orchestrator/budgets/status
-app.get('/budgets/status', rateLimitGeneral, async (c) => {
+app.get('/api/orchestrator/budgets/status', rateLimitGeneral, async (c) => {
   const taskId = c.req.query('taskId') || undefined;
   const goalId = c.req.query('goalId') || undefined;
   const currentCost = Number(c.req.query('currentCost') || '0');
@@ -67,7 +67,7 @@ const createBudgetSchema = z.object({
   action: z.enum(['pause', 'notify']).default('pause'),
 });
 
-app.post('/budgets', rateLimitGeneral, async (c) => {
+app.post('/api/orchestrator/budgets', rateLimitGeneral, async (c) => {
   let body: unknown = {};
   try {
     const text = await c.req.text();
@@ -112,7 +112,7 @@ const updateBudgetSchema = z.object({
   action: z.enum(['pause', 'notify']).optional(),
 });
 
-app.put('/budgets/:id', rateLimitGeneral, async (c) => {
+app.put('/api/orchestrator/budgets/:id', rateLimitGeneral, async (c) => {
   const id = c.req.param('id');
 
   let body: unknown = {};
@@ -147,7 +147,7 @@ app.put('/budgets/:id', rateLimitGeneral, async (c) => {
 });
 
 // DELETE /api/orchestrator/budgets/:id
-app.delete('/budgets/:id', rateLimitGeneral, async (c) => {
+app.delete('/api/orchestrator/budgets/:id', rateLimitGeneral, async (c) => {
   const id = c.req.param('id');
 
   try {
