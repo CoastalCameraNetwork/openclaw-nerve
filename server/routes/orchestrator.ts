@@ -1403,3 +1403,33 @@ function normalizeTitle(title: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+// POST /api/orchestrator/tasks/:id/resume
+app.post('/api/orchestrator/tasks/:id/resume', rateLimitGeneral, async (c) => {
+  const id = c.req.param('id');
+  const store = getKanbanStore();
+
+  try {
+    const task = await store.getTask(id);
+    if (!task || !task.run?.sessionKey) {
+      return c.json({ error: 'Task not found or not running', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+
+    await invokeGatewayTool('sessions_resume', {
+      sessionKey: task.run.sessionKey,
+      prompt: 'Continue from where you left off.',
+    }, 30000);
+
+    // Broadcast stall-resumed event
+    const { broadcast } = await import('../routes/events.js');
+    broadcast('task.stall-resumed', {
+      taskId: id,
+      resumedAt: Date.now(),
+    });
+
+    return c.json({ success: true, taskId: id });
+  } catch (error) {
+    console.error('Resume task failed:', error);
+    return c.json({ error: 'Failed to resume task', code: ErrorCode.GATEWAY_ERROR }, 500);
+  }
+});

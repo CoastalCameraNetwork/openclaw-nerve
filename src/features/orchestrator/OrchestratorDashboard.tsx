@@ -20,6 +20,7 @@ import { DollarSign as DollarSignIcon } from 'lucide-react';
 import { useServerEvents } from '../../hooks/useServerEvents';
 import { TimelineView } from '../timeline';
 import { SupervisorPanel } from './SupervisorPanel';
+import { StalledTaskBanner, type StalledTaskData } from './StalledTaskBanner';
 
 export type TimeRangeOption = 'today-local' | '24h-rolling' | '48h-rolling' | '72h-rolling' | '7d-rolling' | '14d-rolling' | '30d-rolling' | 'today-utc';
 
@@ -319,6 +320,7 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
   const [timeRange, setTimeRange] = useState<TimeRangeOption>('today-local');
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const sessionsRef = useRef<typeof sessions>(sessions);
+  const [stalledTasks, setStalledTasks] = useState<Map<string, StalledTaskData>>(new Map());
 
   // Use the new stats hook
   const { stats: orchestratorStats, loading: statsLoading } = useOrchestratorStats(timeRange);
@@ -525,9 +527,28 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
         // Task completed - refresh sessions
         fetchSessions();
       }
+      if (event.event === 'task.stalled') {
+        const data = event.data as StalledTaskData;
+        setStalledTasks(prev => new Map(prev).set(data.taskId, data));
+      }
+      if (event.event === 'task.stall-resumed') {
+        const data = event.data as { taskId: string };
+        setStalledTasks(prev => {
+          const next = new Map(prev);
+          next.delete(data.taskId);
+          return next;
+        });
+      }
     }, [fetchSessions]),
     { enabled: true }
   );
+
+  const handleResumeTask = useCallback(async (taskId: string) => {
+    await fetch(`/api/orchestrator/tasks/${taskId}/resume`, {
+      method: 'POST',
+      credentials: 'include',
+    });
+  }, []);
 
   if (loading) {
     return (
@@ -540,6 +561,20 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
 
   return (
     <div className="space-y-6 p-6">
+      {/* Stalled Task Banners */}
+      {Array.from(stalledTasks.values()).map(task => (
+        <StalledTaskBanner
+          key={task.taskId}
+          task={task}
+          onResume={() => handleResumeTask(task.taskId)}
+          onDismiss={() => setStalledTasks(prev => {
+            const next = new Map(prev);
+            next.delete(task.taskId);
+            return next;
+          })}
+        />
+      ))}
+
       {/* Active Agents Panel - Shows all running sessions with output */}
       <div className="bg-card border border-border rounded-lg shadow-sm">
         <ActiveAgentsPanel onSessionClick={(taskId) => setSelectedTaskId(taskId)} />
