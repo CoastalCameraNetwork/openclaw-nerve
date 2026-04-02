@@ -2,7 +2,7 @@
 // Change policy: coordinator approval + issue-file sync required.
 
 /** Built-in status keys shipped with the default board config. */
-export const BUILT_IN_STATUSES = ['backlog', 'todo', 'in-progress', 'review', 'done', 'cancelled'] as const;
+export const BUILT_IN_STATUSES = ['backlog', 'planning', 'todo', 'in-progress', 'review', 'done', 'cancelled'] as const;
 export type BuiltInStatus = typeof BUILT_IN_STATUSES[number];
 
 /**
@@ -17,7 +17,7 @@ export type TaskPriority = 'critical' | 'high' | 'normal' | 'low';
  * Default column display order used as a fallback before the board config loads.
  * Consumers should prefer `config.columns` from useKanban() over this constant.
  */
-export const COLUMNS: TaskStatus[] = ['backlog', 'todo', 'in-progress', 'review', 'done'];
+export const COLUMNS: TaskStatus[] = ['backlog', 'planning', 'todo', 'in-progress', 'review', 'done'];
 
 /** Human-readable labels for built-in columns. Custom columns use their `title` from config. */
 export const COLUMN_LABELS: Record<string, string> = {
@@ -69,7 +69,7 @@ export interface KanbanTask {
   estimateMin?: number;
   actualMin?: number;
   feedback: TaskFeedback[];
-  
+
   // GitHub PR integration
   pr?: {
     number: number;
@@ -81,4 +81,20 @@ export interface KanbanTask {
     createdAt?: number;
     updatedAt?: number;
   };
+
+  // Plan-First Workflow
+  plan?: TaskPlan;
+}
+
+export interface TaskPlan {
+  status: 'draft' | 'in-review' | 'approved' | 'rejected';
+  content?: string;
+  reviewerQuestions?: Array<{
+    question: string;
+    answer?: string;
+    resolved: boolean;
+  }>;
+  approvedAt?: number;
+  rejectedAt?: number;
+  rejectionReason?: string;
 }

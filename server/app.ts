@@ -52,6 +52,7 @@ import modelsRoutes from './routes/models.js';
 import budgetsRoutes from './routes/budgets.js';
 import wowzaStreamsRoutes from './routes/wowza-streams.js';
 import dependenciesRoutes from './routes/dependencies.js';
+import plansRoutes from './routes/plans.js';
 // activity routes removed — tab dropped from workspace panel
 
 const app = new Hono();
@@ -128,6 +129,7 @@ const routes = [
   workspaceRoutes, cronsRoutes, sessionsRoutes, skillsRoutes, filesRoutes, apiKeysRoutes,
   voicePhrasesRoutes, fileBrowserRoutes, channelsRoutes, kanbanRoutes, orchestratorRoutes,
   goalsRoutes, agentsRoutes, modelsRoutes, budgetsRoutes, wowzaStreamsRoutes, dependenciesRoutes,
+  plansRoutes,
 ];
 for (const route of routes) app.route('/', route);
 

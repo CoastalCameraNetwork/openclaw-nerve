@@ -60,7 +60,7 @@ function matchesRunIdentifier(run: TaskRunLink, value: string): boolean {
 // ── Types ────────────────────────────────────────────────────────────
 
 /** Built-in status keys that ship with the default board config. */
-export const BUILT_IN_STATUSES = ['backlog', 'todo', 'in-progress', 'review', 'done', 'cancelled'] as const;
+export const BUILT_IN_STATUSES = ['backlog', 'planning', 'todo', 'in-progress', 'review', 'done', 'cancelled'] as const;
 export type BuiltInStatus = typeof BUILT_IN_STATUSES[number];
 
 /**
@@ -134,6 +134,20 @@ export interface KanbanTask {
   dependencies?: {
     blocked_by: string[];  // Task IDs that must complete first
     blocks: string[];      // Task IDs this task blocks
+  };
+
+  // Plan-First Workflow
+  plan?: {
+    status: 'draft' | 'in-review' | 'approved' | 'rejected';
+    content?: string; // Full plan.md content
+    reviewerQuestions?: Array<{
+      question: string;
+      answer?: string;
+      resolved: boolean;
+    }>;
+    approvedAt?: number;
+    rejectedAt?: number;
+    rejectionReason?: string;
   };
 }
 
