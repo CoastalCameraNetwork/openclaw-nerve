@@ -19,6 +19,7 @@ import { ActiveAgentsPanel } from './ActiveAgentsPanel';
 import { DollarSign as DollarSignIcon } from 'lucide-react';
 import { useServerEvents } from '../../hooks/useServerEvents';
 import { TimelineView } from '../timeline';
+import { SupervisorPanel } from './SupervisorPanel';
 
 export type TimeRangeOption = 'today-local' | '24h-rolling' | '48h-rolling' | '72h-rolling' | '7d-rolling' | '14d-rolling' | '30d-rolling' | 'today-utc';
 
@@ -543,6 +544,9 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
       <div className="bg-card border border-border rounded-lg shadow-sm">
         <ActiveAgentsPanel onSessionClick={(taskId) => setSelectedTaskId(taskId)} />
       </div>
+
+      {/* Supervisor Panel - Manager-style summary with signals */}
+      <SupervisorPanel taskId={selectedTaskId || undefined} />
 
       {/* Task Detail Panel */}
       {selectedTaskId && (
