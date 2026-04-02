@@ -10,6 +10,7 @@
 
 import { invokeGatewayTool } from '../lib/gateway-client.js';
 import { broadcast } from '../routes/events.js';
+import { checkForStalledTasks } from './stall-detection.js';
 
 interface SessionInfo {
   sessionKey: string;
@@ -32,6 +33,8 @@ const state: WatcherState = {
   running: false,
   knownSessions: new Set<string>(),
 };
+
+let pollCount = 0;
 
 /**
  * Parse gateway response to extract session list.
@@ -84,6 +87,8 @@ function parseSessions(result: unknown): SessionInfo[] {
  */
 async function pollSessions(): Promise<void> {
   try {
+    pollCount++;
+
     const result = await invokeGatewayTool('subagents', {
       action: 'list',
       recentMinutes: 30,
@@ -127,6 +132,14 @@ async function pollSessions(): Promise<void> {
           const toRemove = Array.from(state.knownSessions).slice(0, state.knownSessions.size - 100);
           toRemove.forEach((k) => state.knownSessions.delete(k));
         }
+      }
+    }
+
+    // Check for stalled tasks periodically (every 5th poll = ~25 seconds)
+    if (pollCount % 5 === 0) {
+      const stallResult = await checkForStalledTasks();
+      if (stallResult.stalledTasks.length > 0) {
+        console.log(`[session-watcher] Detected ${stallResult.stalledTasks.length} stalled tasks`);
       }
     }
   } catch (error) {
