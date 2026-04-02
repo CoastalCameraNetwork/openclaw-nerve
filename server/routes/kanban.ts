@@ -535,6 +535,20 @@ app.patch('/api/kanban/tasks/:id', rateLimitGeneral, async (c) => {
       .map(([k, v]) => [k, v === null ? undefined : v]),
   ) as Record<string, unknown>;
 
+  // Plan-First Workflow: Require approved plan for in-progress transition
+  if (cleanPatch.status === 'in-progress') {
+    const task = await store.getTask(id);
+    if (task && task.plan) {
+      if (task.plan.status !== 'approved') {
+        return c.json({
+          error: 'Plan must be approved before moving to in-progress',
+          code: 'PLAN_NOT_APPROVED',
+          planStatus: task.plan.status,
+        }, 403);
+      }
+    }
+  }
+
   try {
     const updated = await store.updateTask(id, version, cleanPatch);
     return c.json(updated);
