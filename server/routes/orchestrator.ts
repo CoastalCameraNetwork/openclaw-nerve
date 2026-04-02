@@ -1487,3 +1487,48 @@ app.post('/api/orchestrator/tasks/:id/start-chain', rateLimitGeneral, async (c) 
 
   return c.json({ success: true, taskId, chainId: chain.id });
 });
+
+// GET /api/orchestrator/approvals - List pending approvals
+app.get('/api/orchestrator/approvals', rateLimitGeneral, async (c) => {
+  const { approvalQueue } = await import('../services/approval-queue.js');
+  const pending = approvalQueue.getPending();
+  return c.json({ approvals: pending });
+});
+
+// POST /api/orchestrator/approvals/:id/approve
+app.post('/api/orchestrator/approvals/:id/approve', rateLimitGeneral, async (c) => {
+  const id = c.req.param('id');
+  const { approvalQueue } = await import('../services/approval-queue.js');
+
+  let body: unknown = {};
+  try {
+    const text = await c.req.text();
+    if (text) body = JSON.parse(text);
+  } catch {
+    return c.json({ error: 'Invalid JSON' }, 400);
+  }
+
+  const modifiedCommand = (body as Record<string, unknown>).modifiedCommand as string | undefined;
+  approvalQueue.approve(id, modifiedCommand);
+
+  return c.json({ success: true, approvalId: id });
+});
+
+// POST /api/orchestrator/approvals/:id/deny
+app.post('/api/orchestrator/approvals/:id/deny', rateLimitGeneral, async (c) => {
+  const id = c.req.param('id');
+  const { approvalQueue } = await import('../services/approval-queue.js');
+
+  let body: unknown = {};
+  try {
+    const text = await c.req.text();
+    if (text) body = JSON.parse(text);
+  } catch {
+    return c.json({ error: 'Invalid JSON' }, 400);
+  }
+
+  const reason = (body as Record<string, unknown>).reason as string || 'Denied by operator';
+  approvalQueue.deny(id, reason);
+
+  return c.json({ success: true, approvalId: id });
+});

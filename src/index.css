@@ -1444,3 +1444,41 @@
     transition-duration: 0.001s !important;
   }
 }
+
+/* Pixel art sparkle animations */
+@keyframes sparkle-fade {
+  0%, 100% { opacity: 0; transform: scale(0); }
+  50% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes sparkle-drift {
+  0% { transform: translateY(0) rotate(0deg); }
+  100% { transform: translateY(-8px) rotate(180deg); }
+}
+
+.sparkle {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  background: #fbbf24;
+  border-radius: 1px;
+  image-rendering: pixelated;
+}
+
+.sparkle-1 {
+  top: 20%;
+  left: 10%;
+  animation: sparkle-fade 1.5s ease-in-out infinite, sparkle-drift 1.5s ease-in-out infinite;
+}
+
+.sparkle-2 {
+  top: 40%;
+  right: 10%;
+  animation: sparkle-fade 1.5s ease-in-out infinite 0.3s, sparkle-drift 1.5s ease-in-out infinite 0.3s;
+}
+
+.sparkle-3 {
+  bottom: 30%;
+  left: 20%;
+  animation: sparkle-fade 1.5s ease-in-out infinite 0.6s, sparkle-drift 1.5s ease-in-out infinite 0.6s;
+}

@@ -16,6 +16,7 @@ import { useAgents, useOrchestratorStats } from './useOrchestrator';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { TaskDetailPanel } from './TaskDetailPanel';
 import { ActiveAgentsPanel } from './ActiveAgentsPanel';
+import { OfficeView } from './OfficeView';
 import { DollarSign as DollarSignIcon } from 'lucide-react';
 import { useServerEvents } from '../../hooks/useServerEvents';
 import { TimelineView } from '../timeline';
@@ -579,6 +580,9 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
       <div className="bg-card border border-border rounded-lg shadow-sm">
         <ActiveAgentsPanel onSessionClick={(taskId) => setSelectedTaskId(taskId)} />
       </div>
+
+      {/* Office View - Pixel art agent visualization */}
+      <OfficeView showGrid animated />
 
       {/* Supervisor Panel - Manager-style summary with signals */}
       <SupervisorPanel taskId={selectedTaskId || undefined} />
