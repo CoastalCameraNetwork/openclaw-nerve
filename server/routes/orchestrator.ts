@@ -1433,3 +1433,57 @@ app.post('/api/orchestrator/tasks/:id/resume', rateLimitGeneral, async (c) => {
     return c.json({ error: 'Failed to resume task', code: ErrorCode.GATEWAY_ERROR }, 500);
   }
 });
+
+// GET /api/orchestrator/chains - List available agent chains
+app.get('/api/orchestrator/chains', rateLimitGeneral, async (c) => {
+  const { listChains } = await import('../services/agent-chains.js');
+  const chains = listChains();
+  return c.json({ chains });
+});
+
+// POST /api/orchestrator/tasks/:id/start-chain - Start a chain workflow
+app.post('/api/orchestrator/tasks/:id/start-chain', rateLimitGeneral, async (c) => {
+  const taskId = c.req.param('id');
+  const store = getKanbanStore();
+  const task = await store.getTask(taskId);
+
+  if (!task) {
+    return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+  }
+
+  let body: unknown = {};
+  try {
+    const text = await c.req.text();
+    if (text) body = JSON.parse(text);
+  } catch {
+    return c.json({ error: 'Invalid JSON', code: ErrorCode.INVALID_REQUEST }, 400);
+  }
+
+  const chainIdSchema = z.object({ chainId: z.string() });
+  const parsed = chainIdSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid request', code: ErrorCode.INVALID_REQUEST }, 400);
+  }
+
+  const { getChain } = await import('../services/agent-chains.js');
+  const chain = getChain(parsed.data.chainId);
+  if (!chain) {
+    return c.json({ error: 'Chain not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+  }
+
+  // Store chain state in metadata
+  await store.updateTask(taskId, task.version, {
+    metadata: {
+      ...(task.metadata as Record<string, unknown> || {}),
+      chainId: parsed.data.chainId,
+      chainStep: 0,
+      chainStatus: 'running',
+    },
+  } as never);
+
+  // Broadcast chain started event
+  const { broadcast } = await import('../routes/events.js');
+  broadcast('chain.start', { taskId, chainId: chain.id, chainName: chain.name });
+
+  return c.json({ success: true, taskId, chainId: chain.id });
+});
