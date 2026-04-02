@@ -9,6 +9,8 @@
  * - tokens.updated  — Token usage changed
  * - status.changed  — Gateway status changed
  * - ping            — Keep-alive (every 30s)
+ * - agent.signal    — Structured agent signal (status, blocker, handoff)
+ * - task.blocked    — Task blocked, needs input
  */
 
 import { Hono } from 'hono';

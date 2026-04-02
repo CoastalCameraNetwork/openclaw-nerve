@@ -118,3 +118,23 @@ export function getSignalType(output: string): string | null {
   const signal = parseAgentSignal(output);
   return signal?.signal ?? null;
 }
+
+/**
+ * Extract all signals from agent output (supports multiple signals).
+ */
+export function extractAllSignals(output: string): AgentSignal[] {
+  const signals: AgentSignal[] = [];
+  const jsonObjects = output.match(/\{[^}]*"signal"[^}]*\}/g) || [];
+
+  for (const jsonStr of jsonObjects) {
+    try {
+      const parsed = JSON.parse(jsonStr);
+      const signal = parseAgentSignal(JSON.stringify(parsed));
+      if (signal) signals.push(signal);
+    } catch {
+      // Skip invalid JSON
+    }
+  }
+
+  return signals;
+}

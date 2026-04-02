@@ -22,6 +22,8 @@ import {
 } from './github-pr.js';
 import { runAutomatedPRReview, type PRReviewReport } from './pr-review.js';
 import { canExecuteTask } from './dependency-service.js';
+import { parseAgentSignal, extractAllSignals } from './agent-signals.js';
+import { broadcast } from '../routes/events.js';
 
 export interface OrchestratorTask {
   task_id: string;
@@ -59,6 +61,15 @@ export interface AgentHandoff {
   recommendations: string[];
   errors: string[];
   rawOutput?: string; // truncated for context window management
+}
+
+export interface SignalCheckpoint {
+  timestamp: string;
+  agent: string;
+  signal: string;
+  phase?: string;
+  detail?: string;
+  data?: Record<string, unknown>;
 }
 
 export interface TaskStatus {
@@ -310,6 +321,10 @@ export async function executeTask(
         const result = await spawnAgentSession(agentName, prompt, label, targetDir, model);
         if (result.session_key) {
           sessionLabels.push(label);
+          // Parse and broadcast signals from agent output
+          if (result.output) {
+            broadcastAgentSignals(taskId, agentName, result.output);
+          }
         }
         return result;
       });
@@ -325,13 +340,13 @@ export async function executeTask(
         // Build context from previous handoffs
         let previousContext = '';
         if (handoffs.length > 0) {
-          previousContext = '\\n\\n**PREVIOUS AGENT RESULTS:**\\n' +
+          previousContext = '\n\n**PREVIOUS AGENT RESULTS:**\n' +
             handoffs.map(h => `### ${h.agent} (${h.status})
 Summary: ${h.summary}
 Files changed: ${h.filesChanged.join(', ') || 'none'}
 ${h.recommendations.length ? 'Recommendations: ' + h.recommendations.join('; ') : ''}
 ${h.errors.length ? 'Errors: ' + h.errors.join('; ') : ''}`
-            ).join('\\n\\n');
+            ).join('\n\n');
         }
 
         // Build prompt with handoff instruction for sequential agents
@@ -344,15 +359,16 @@ ${h.errors.length ? 'Errors: ' + h.errors.join('; ') : ''}`
           ? `${basePrompt}${HANDOFF_INSTRUCTION}`
           : basePrompt;
 
-        const fullPrompt = `${handoffPrompt}${projectContext}\\n\\n${gateInstructions}`;
+        const fullPrompt = `${handoffPrompt}${projectContext}\n\n${gateInstructions}`;
 
         // Pass worktree path if available
         const targetDir = worktreePath || project?.localPath;
         const result = await spawnAgentSession(agentName, fullPrompt, label, targetDir, model);
         if (result.session_key) {
           sessionLabels.push(label);
-          // Parse handoff for next agent
+          // Parse and broadcast signals from agent output
           if (result.output) {
+            broadcastAgentSignals(taskId, agentName, result.output);
             handoffs.push(parseAgentHandoff(agentName, result.output));
           }
         }
@@ -896,4 +912,39 @@ function mapPriority(severity: string | number | undefined): 'high' | 'normal' |
     return 'normal';
   }
   return 'low';
+}
+
+/**
+ * Parse agent output for signals and broadcast to SSE subscribers.
+ */
+function broadcastAgentSignals(taskId: string, agentName: string, output: string): void {
+  const signals = extractAllSignals(output);
+
+  for (const signal of signals) {
+    const checkpoint: SignalCheckpoint = {
+      timestamp: new Date().toISOString(),
+      agent: agentName,
+      signal: signal.signal,
+      phase: 'phase' in signal ? signal.phase : undefined,
+      detail: 'detail' in signal ? signal.detail : undefined,
+      data: signal as unknown as Record<string, unknown>,
+    };
+
+    // Broadcast to SSE subscribers
+    broadcast('agent.signal', {
+      taskId,
+      checkpoint,
+    });
+
+    // Handle blocker signals specially
+    if (signal.signal === 'blocker') {
+      broadcast('task.blocked', {
+        taskId,
+        agent: agentName,
+        reason: signal.reason,
+        suggestion: signal.suggestion,
+        requiresHumanInput: signal.requiresHumanInput,
+      });
+    }
+  }
 }
