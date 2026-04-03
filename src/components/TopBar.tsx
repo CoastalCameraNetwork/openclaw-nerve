@@ -17,6 +17,7 @@ import {
   Brain,
   MessageSquare,
   LayoutGrid,
+  Cpu,
 } from "lucide-react";
 import type { ViewMode } from "@/features/command-palette/commands";
 import type { AgentLogEntry, EventEntry, TokenData } from "@/types";
@@ -270,6 +271,17 @@ export function TopBar({
             >
               <LayoutGrid size={13} aria-hidden="true" />
               <span>Tasks</span>
+            </button>
+            <button
+              onClick={() => onViewModeChange("orchestrator")}
+              title="Orchestrator View"
+              aria-label="Switch to orchestrator view"
+              aria-pressed={viewMode === "orchestrator"}
+              data-active={viewMode === "orchestrator"}
+              className="shell-chip min-h-11 flex-1 justify-center text-[0.733rem] uppercase tracking-[0.14em] max-[371px]:min-h-[38px] max-[371px]:gap-1 max-[371px]:px-2 max-[371px]:text-[0.667rem] max-[371px]:tracking-[0.08em] max-[371px]:[&_svg]:size-3 sm:min-h-10 sm:flex-none"
+            >
+              <Cpu size={13} aria-hidden="true" />
+              <span>Agents</span>
             </button>
           </div>
         )}
