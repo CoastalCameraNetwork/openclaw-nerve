@@ -12,6 +12,10 @@ export default defineConfig({
       'node_modules/**',
       'server-dist/**',  // Exclude compiled server output (contains duplicate .test.js files)
     ],
+    include: [
+      '**/*.{test,spec}.?(c|m)[jt]s?(x)',
+      'server/**/*.test.ts',  // Include server-side tests
+    ],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'lcov'],
