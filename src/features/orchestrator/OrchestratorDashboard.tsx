@@ -22,6 +22,8 @@ import { useServerEvents } from '../../hooks/useServerEvents';
 import { TimelineView } from '../timeline';
 import { SupervisorPanel } from './SupervisorPanel';
 import { StalledTaskBanner, type StalledTaskData } from './StalledTaskBanner';
+import { TurboPatternsPanel } from './TurboPatternsPanel';
+import { ImprovementBacklog } from '../improvements/ImprovementBacklog';
 
 export type TimeRangeOption = 'today-local' | '24h-rolling' | '48h-rolling' | '72h-rolling' | '7d-rolling' | '14d-rolling' | '30d-rolling' | 'today-utc';
 
@@ -589,10 +591,22 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
 
       {/* Task Detail Panel */}
       {selectedTaskId && (
-        <TaskDetailPanel
-          taskId={selectedTaskId}
-          onClose={() => setSelectedTaskId(null)}
-        />
+        <div className="space-y-4">
+          <TaskDetailPanel
+            taskId={selectedTaskId}
+            onClose={() => setSelectedTaskId(null)}
+          />
+          <TurboPatternsPanel
+            taskId={selectedTaskId}
+            onAuditComplete={(reportId) => console.log('Audit complete:', reportId)}
+            onPolishComplete={(reportId) => console.log('Polish complete:', reportId)}
+            onFinalizeComplete={(reportId) => console.log('Finalize complete:', reportId)}
+          />
+          <ImprovementBacklog
+            projectId={selectedTaskId}
+            onPromoteToTask={(improvement) => console.log('Promoted improvement:', improvement)}
+          />
+        </div>
       )}
 
       {/* Header */}

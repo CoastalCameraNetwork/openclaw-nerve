@@ -101,45 +101,112 @@ export class FinalizeWorkflowService {
       changelogUpdated: false,
     };
 
-    const phases = [
-      { name: 'polish-code', enabled: true, run: () => this.runPolishCode(options) },
-      { name: 'extract-learnings', enabled: options.extractLearnings ?? true, run: () => this.extractLearnings() },
-      { name: 'update-changelog', enabled: options.updateChangelog ?? true, run: () => this.updateChangelog(options) },
-      { name: 'validate', enabled: true, run: () => this.validate(options) },
-    ];
-
-    for (const phase of phases) {
-      if (!phase.enabled) continue;
-
+    // Run polish-code phase
+    if (true) { // always enabled
       const startTime = Date.now();
       try {
-        const result = await phase.run();
+        const result = await this.runPolishCode(options);
         report.phases.push({
-          name: phase.name,
+          name: 'polish-code',
           success: result.success,
           output: result.output,
           errors: result.errors,
           duration: Date.now() - startTime,
           suggestions: result.suggestions,
         });
-
         if (!result.success) {
           report.overall = result.partial ? 'partial' : 'failed';
         }
+      } catch (error) {
+        report.phases.push({
+          name: 'polish-code',
+          success: false,
+          output: '',
+          errors: [error instanceof Error ? error.message : String(error)],
+          duration: Date.now() - startTime,
+        });
+        report.overall = 'failed';
+      }
+    }
 
-        // Aggregate results
-        if (result.learningsCount !== undefined) {
-          report.learningsExtracted += result.learningsCount;
+    // Run extract-learnings phase
+    if (options.extractLearnings ?? true) {
+      const startTime = Date.now();
+      try {
+        const result = await this.extractLearnings();
+        report.phases.push({
+          name: 'extract-learnings',
+          success: result.success,
+          output: result.output,
+          errors: result.errors,
+          duration: Date.now() - startTime,
+          suggestions: result.suggestions,
+        });
+        if (!result.success) {
+          report.overall = result.partial ? 'partial' : 'failed';
         }
-        if (result.improvementsCount !== undefined) {
-          report.improvementsCreated += result.improvementsCount;
+        report.learningsExtracted += result.learningsCount;
+        report.improvementsCreated += result.improvementsCount;
+      } catch (error) {
+        report.phases.push({
+          name: 'extract-learnings',
+          success: false,
+          output: '',
+          errors: [error instanceof Error ? error.message : String(error)],
+          duration: Date.now() - startTime,
+        });
+        report.overall = 'failed';
+      }
+    }
+
+    // Run update-changelog phase
+    if (options.updateChangelog ?? true) {
+      const startTime = Date.now();
+      try {
+        const result = await this.updateChangelog(options);
+        report.phases.push({
+          name: 'update-changelog',
+          success: result.success,
+          output: result.output,
+          errors: result.errors,
+          duration: Date.now() - startTime,
+          suggestions: result.suggestions,
+        });
+        if (!result.success) {
+          report.overall = result.partial ? 'partial' : 'failed';
         }
-        if (result.changelogUpdated !== undefined) {
-          report.changelogUpdated = result.changelogUpdated;
+        report.changelogUpdated = result.changelogUpdated;
+      } catch (error) {
+        report.phases.push({
+          name: 'update-changelog',
+          success: false,
+          output: '',
+          errors: [error instanceof Error ? error.message : String(error)],
+          duration: Date.now() - startTime,
+        });
+        report.overall = 'failed';
+      }
+    }
+
+    // Run validate phase
+    if (true) { // always enabled
+      const startTime = Date.now();
+      try {
+        const result = await this.validate(options);
+        report.phases.push({
+          name: 'validate',
+          success: result.success,
+          output: result.output,
+          errors: result.errors,
+          duration: Date.now() - startTime,
+          suggestions: result.suggestions,
+        });
+        if (!result.success) {
+          report.overall = result.partial ? 'partial' : 'failed';
         }
       } catch (error) {
         report.phases.push({
-          name: phase.name,
+          name: 'validate',
           success: false,
           output: '',
           errors: [error instanceof Error ? error.message : String(error)],
@@ -163,7 +230,7 @@ export class FinalizeWorkflowService {
     errors: string[];
     suggestions: string[];
   }> {
-    const polishService = getPolishCodeService(this.projectRoot);
+    const polishService = getPolishCodeService();
 
     const polishOptions: PolishOptions = {
       filePath: options.filePaths?.[0] || '.',
@@ -178,8 +245,8 @@ export class FinalizeWorkflowService {
 
     const suggestions = polishReport.suggestions;
     const errors = polishReport.steps
-      .filter(s => !s.success)
-      .flatMap(s => s.errors);
+      .filter((s) => !s.success)
+      .flatMap((s) => s.errors);
 
     return {
       success: polishReport.overall !== 'failed',

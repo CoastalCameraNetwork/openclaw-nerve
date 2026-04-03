@@ -13,7 +13,7 @@
 
 import { z } from 'zod';
 import { invokeGatewayTool } from '../lib/gateway-client';
-import type { Improvement } from './improvement-backlog';
+import type { Improvement } from '../lib/improvement-backlog';
 
 export const AuditRequestSchema = z.object({
   filePath: z.string(),
@@ -306,7 +306,12 @@ If no findings, return empty array [].`;
         60000 // 60 second timeout
       );
 
-      const findings = this.parseAgentResponse(result.output);
+      // Type guard for result
+      const output = typeof result === 'object' && result !== null && 'output' in result
+        ? (result as { output: string }).output
+        : String(result);
+
+      const findings = this.parseAgentResponse(output);
 
       return {
         filePath: request.filePath,

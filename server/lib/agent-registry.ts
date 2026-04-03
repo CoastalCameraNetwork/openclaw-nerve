@@ -2,6 +2,7 @@
  * Agent Registry - Specialist agent definitions for CCN orchestrator
  *
  * Defines available specialist agents, their domains, and routing keywords.
+ * Supports pluggable agents via defineAgentRegistry() for puzzle-piece architecture.
  */
 
 export interface SpecialistAgent {
@@ -12,6 +13,87 @@ export interface SpecialistAgent {
   model?: string; // Optional model override (bailian/qwen3.5-plus, glm-4.5, etc.)
   thinking?: 'off' | 'low' | 'medium' | 'high';
 }
+
+/**
+ * Pluggable Agent Configuration
+ *
+ * Enables puzzle-piece architecture where agents can be:
+ * - Swapped with other agents (swapWith)
+ * - Marked as custom (user-defined)
+ * - Extended with additional skills
+ *
+ * Inspired by Turbo's pluggable agent interface
+ */
+export interface AgentConfig {
+  id: string;
+  type: 'reviewer' | 'executor' | 'analyzer' | 'orchestrator' | 'specialist';
+  domain?: string;
+  description?: string;
+  keywords?: string[];
+  model?: string;
+  thinking?: 'off' | 'low' | 'medium' | 'high';
+  skills: string[]; // Capabilities this agent provides
+  swapWith?: string; // ID of built-in agent this can replace
+  custom?: boolean; // Is this a user-defined custom agent?
+  enabled?: boolean; // Can be disabled without removing
+  metadata?: Record<string, unknown>; // Additional configuration
+}
+
+export interface PluggableAgentRegistry {
+  [agentId: string]: AgentConfig;
+}
+
+/**
+ * Define a pluggable agent registry with type safety.
+ * Use this to register custom agents that can swap with built-ins.
+ *
+ * @example
+ * export const CUSTOM_AGENTS = defineAgentRegistry({
+ *   'custom-security-agent': {
+ *     id: 'custom-security-agent',
+ *     type: 'reviewer',
+ *     skills: ['security-audit', 'threat-model'],
+ *     swapWith: 'security-reviewer',
+ *     model: 'qwen3.5-plus',
+ *   },
+ * });
+ */
+export function defineAgentRegistry<T extends PluggableAgentRegistry>(
+  registry: T
+): T {
+  // Validate that swapWith references a valid built-in agent
+  for (const [agentId, config] of Object.entries(registry)) {
+    if (config.swapWith && !SPECIALIST_AGENTS[config.swapWith]) {
+      console.warn(
+        `[AgentRegistry] Custom agent "${agentId}" wants to swap with "${config.swapWith}" which doesn't exist. Swap will be ignored.`
+      );
+      // Remove invalid swap configuration
+      (registry[agentId] as any).swapWith = undefined;
+    }
+  }
+  return registry;
+}
+
+/**
+ * Built-in agents that can be swapped with custom agents.
+ * These are the "puzzle piece slots" that custom agents can fill.
+ */
+export const SWAPPABLE_AGENT_IDS = [
+  'security-reviewer',
+  'quality-reviewer',
+  'k8s-agent',
+  'mgmt-agent',
+  'wordpress-agent',
+  'streaming-agent',
+  'hls-recorder-agent',
+  'splash-scripts-agent',
+  'database-agent',
+  'storage-agent',
+  'cdn-agent',
+  'cicd-agent',
+] as const;
+
+export type SwappableAgentId = typeof SWAPPABLE_AGENT_IDS[number];
 
 export interface RoutingRule {
   id: string;
@@ -433,4 +515,96 @@ export function routeTask(description: string): {
     fallback_used: true,
     model,
   };
+}
+
+// ============================================================================
+// Pluggable Agent Support
+// ============================================================================
+
+/**
+ * Registry for custom agents loaded from .nerve/agents/ directory
+ * or programmatically registered.
+ */
+let customAgentsRegistry: PluggableAgentRegistry = {};
+
+/**
+ * Register custom agents programmatically.
+ * These agents can swap with built-in agents or extend the registry.
+ *
+ * @param agents - Custom agent configurations
+ */
+export function registerCustomAgents(agents: PluggableAgentRegistry): void {
+  customAgentsRegistry = {
+    ...customAgentsRegistry,
+    ...agents,
+  };
+}
+
+/**
+ * Load custom agents from a configuration object.
+ * Alias for registerCustomAgents for consistency with defineAgentRegistry pattern.
+ */
+export function loadCustomAgents(agents: PluggableAgentRegistry): void {
+  registerCustomAgents(agents);
+}
+
+/**
+ * Get the effective agent list with custom agents applied.
+ * Custom agents with swapWith replace their built-in counterparts.
+ * Other custom agents are added to the pool.
+ */
+export function getEffectiveAgents(): Record<string, SpecialistAgent | AgentConfig> {
+  const effective: Record<string, SpecialistAgent | AgentConfig> = { ...SPECIALIST_AGENTS };
+
+  // Apply custom agents
+  for (const [agentId, config] of Object.entries(customAgentsRegistry)) {
+    if (!config.enabled) continue; // Skip disabled agents
+
+    if (config.swapWith) {
+      // Replace built-in agent
+      if (SPECIALIST_AGENTS[config.swapWith]) {
+        effective[config.swapWith] = {
+          ...SPECIALIST_AGENTS[config.swapWith],
+          ...config,
+          name: config.id, // Use custom agent's name
+        };
+      }
+    } else {
+      // Add as new agent
+      effective[agentId] = config;
+    }
+  }
+
+  return effective;
+}
+
+/**
+ * Check if a custom agent has swapped with a built-in.
+ */
+export function isAgentSwapped(builtInId: string): boolean {
+  const customAgent = Object.values(customAgentsRegistry).find(
+    (config) => config.swapWith === builtInId && config.enabled !== false
+  );
+  return !!customAgent;
+}
+
+/**
+ * Get all registered custom agents.
+ */
+export function getCustomAgents(): PluggableAgentRegistry {
+  return { ...customAgentsRegistry };
+}
+
+/**
+ * Clear all custom agents (useful for testing).
+ */
+export function clearCustomAgents(): void {
+  customAgentsRegistry = {};
+}
+
+/**
+ * Get a list of all available agent IDs including custom ones.
+ */
+export function getAllAgentIds(): string[] {
+  return Object.keys(getEffectiveAgents());
 }

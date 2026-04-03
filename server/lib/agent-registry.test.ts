@@ -291,3 +291,294 @@ describe('ROUTING_RULES', () => {
     }
   });
 });
+
+// ── Pluggable Agent Registry ─────────────────────────────────────────
+
+import {
+  defineAgentRegistry,
+  registerCustomAgents,
+  loadCustomAgents,
+  getEffectiveAgents,
+  isAgentSwapped,
+  getCustomAgents,
+  clearCustomAgents,
+  getAllAgentIds,
+  SWAPPABLE_AGENT_IDS,
+} from './agent-registry.js';
+
+describe('Pluggable Agent Registry', () => {
+  beforeEach(() => {
+    // Clear custom agents before each test
+    clearCustomAgents();
+  });
+
+  describe('defineAgentRegistry', () => {
+    it('should define a custom agent registry', () => {
+      const customAgents = defineAgentRegistry({
+        'my-custom-agent': {
+          id: 'my-custom-agent',
+          type: 'reviewer',
+          skills: ['code-review', 'security'],
+          model: 'qwen3.5-plus',
+        },
+      });
+
+      expect(customAgents['my-custom-agent']).toBeDefined();
+      expect(customAgents['my-custom-agent'].id).toBe('my-custom-agent');
+    });
+
+    it('should warn and remove invalid swapWith references', () => {
+      const consoleWarn = console.warn;
+      const warnings: string[] = [];
+      console.warn = (msg: string) => warnings.push(msg);
+
+      const customAgents = defineAgentRegistry({
+        'invalid-swap': {
+          id: 'invalid-swap',
+          type: 'specialist',
+          skills: ['test'],
+          swapWith: 'non-existent-agent',
+        },
+      } as any);
+
+      expect(warnings.some(w => w.includes('non-existent-agent'))).toBe(true);
+      expect(customAgents['invalid-swap'].swapWith).toBeUndefined();
+
+      console.warn = consoleWarn;
+    });
+
+    it('should allow valid swapWith references', () => {
+      const customAgents = defineAgentRegistry({
+        'custom-security': {
+          id: 'custom-security',
+          type: 'reviewer',
+          skills: ['security-audit'],
+          swapWith: 'security-reviewer',
+        },
+      });
+
+      expect(customAgents['custom-security'].swapWith).toBe('security-reviewer');
+    });
+  });
+
+  describe('registerCustomAgents', () => {
+    it('should register custom agents', () => {
+      registerCustomAgents({
+        'test-agent': {
+          id: 'test-agent',
+          type: 'executor',
+          skills: ['testing'],
+        },
+      });
+
+      const custom = getCustomAgents();
+      expect(custom['test-agent']).toBeDefined();
+    });
+
+    it('should merge multiple registrations', () => {
+      registerCustomAgents({
+        'agent-1': {
+          id: 'agent-1',
+          type: 'executor',
+          skills: ['test'],
+        },
+      });
+
+      registerCustomAgents({
+        'agent-2': {
+          id: 'agent-2',
+          type: 'analyzer',
+          skills: ['analyze'],
+        },
+      });
+
+      const custom = getCustomAgents();
+      expect(custom['agent-1']).toBeDefined();
+      expect(custom['agent-2']).toBeDefined();
+    });
+  });
+
+  describe('getEffectiveAgents', () => {
+    it('should return built-in agents when no custom agents registered', () => {
+      const effective = getEffectiveAgents();
+
+      expect(effective['security-reviewer']).toBeDefined();
+      expect(effective['k8s-agent']).toBeDefined();
+      expect(effective['orchestrator-agent']).toBeDefined();
+    });
+
+    it('should add custom agents without swapWith', () => {
+      registerCustomAgents({
+        'custom-analyzer': {
+          id: 'custom-analyzer',
+          type: 'analyzer',
+          skills: ['deep-analysis'],
+          model: 'qwen3.5-plus',
+        },
+      });
+
+      const effective = getEffectiveAgents();
+
+      expect(effective['custom-analyzer']).toBeDefined();
+      expect(effective['security-reviewer']).toBeDefined(); // Built-in still present
+    });
+
+    it('should replace built-in agents with swapWith', () => {
+      registerCustomAgents({
+        'my-security-agent': {
+          id: 'my-security-agent',
+          type: 'reviewer',
+          skills: ['advanced-security'],
+          swapWith: 'security-reviewer',
+          model: 'custom-model',
+        },
+      });
+
+      const effective = getEffectiveAgents();
+
+      // The security-reviewer slot should now have custom agent properties
+      const securityAgent = effective['security-reviewer'];
+      expect(securityAgent).toBeDefined();
+      expect((securityAgent as any).skills).toContain('advanced-security');
+      expect((securityAgent as any).model).toBe('custom-model');
+    });
+
+    it('should skip disabled custom agents', () => {
+      registerCustomAgents({
+        'disabled-agent': {
+          id: 'disabled-agent',
+          type: 'executor',
+          skills: ['test'],
+          enabled: false,
+        },
+      });
+
+      const effective = getEffectiveAgents();
+
+      expect(effective['disabled-agent']).toBeUndefined();
+    });
+  });
+
+  describe('isAgentSwapped', () => {
+    it('should return false for unswapped agents', () => {
+      expect(isAgentSwapped('security-reviewer')).toBe(false);
+      expect(isAgentSwapped('k8s-agent')).toBe(false);
+    });
+
+    it('should return true for swapped agents', () => {
+      registerCustomAgents({
+        'custom-sec': {
+          id: 'custom-sec',
+          type: 'reviewer',
+          skills: ['security'],
+          swapWith: 'security-reviewer',
+        },
+      });
+
+      expect(isAgentSwapped('security-reviewer')).toBe(true);
+    });
+
+    it('should return false for disabled swapped agents', () => {
+      registerCustomAgents({
+        'custom-sec': {
+          id: 'custom-sec',
+          type: 'reviewer',
+          skills: ['security'],
+          swapWith: 'security-reviewer',
+          enabled: false,
+        },
+      });
+
+      expect(isAgentSwapped('security-reviewer')).toBe(false);
+    });
+  });
+
+  describe('loadCustomAgents', () => {
+    it('should be an alias for registerCustomAgents', () => {
+      loadCustomAgents({
+        'loaded-agent': {
+          id: 'loaded-agent',
+          type: 'specialist',
+          skills: ['loading'],
+        },
+      });
+
+      const custom = getCustomAgents();
+      expect(custom['loaded-agent']).toBeDefined();
+    });
+  });
+
+  describe('getAllAgentIds', () => {
+    it('should return all built-in agent ids', () => {
+      const ids = getAllAgentIds();
+
+      expect(ids).toContain('security-reviewer');
+      expect(ids).toContain('k8s-agent');
+      expect(ids).toContain('orchestrator-agent');
+    });
+
+    it('should include custom agent ids', () => {
+      registerCustomAgents({
+        'custom-1': {
+          id: 'custom-1',
+          type: 'executor',
+          skills: ['test'],
+        },
+      });
+
+      const ids = getAllAgentIds();
+
+      expect(ids).toContain('custom-1');
+    });
+
+    it('should not duplicate ids when agent is swapped', () => {
+      registerCustomAgents({
+        'custom-sec': {
+          id: 'custom-sec',
+          type: 'reviewer',
+          skills: ['security'],
+          swapWith: 'security-reviewer',
+        },
+      });
+
+      const ids = getAllAgentIds();
+
+      // security-reviewer should still be there (swapped, not removed)
+      expect(ids).toContain('security-reviewer');
+      // custom-sec should NOT be a separate entry
+      expect(ids).not.toContain('custom-sec');
+    });
+  });
+
+  describe('clearCustomAgents', () => {
+    it('should clear all registered custom agents', () => {
+      registerCustomAgents({
+        'temp-agent': {
+          id: 'temp-agent',
+          type: 'executor',
+          skills: ['temp'],
+        },
+      });
+
+      expect(getCustomAgents()['temp-agent']).toBeDefined();
+
+      clearCustomAgents();
+
+      expect(getCustomAgents()).toEqual({});
+    });
+  });
+
+  describe('SWAPPABLE_AGENT_IDS', () => {
+    it('should include all swappable agent IDs', () => {
+      expect(SWAPPABLE_AGENT_IDS).toContain('security-reviewer');
+      expect(SWAPPABLE_AGENT_IDS).toContain('k8s-agent');
+      expect(SWAPPABLE_AGENT_IDS).toContain('wordpress-agent');
+    });
+
+    it('should only include valid built-in agent IDs', () => {
+      for (const agentId of SWAPPABLE_AGENT_IDS) {
+        expect(SPECIALIST_AGENTS[agentId as keyof typeof SPECIALIST_AGENTS]).toBeDefined();
+      }
+    });
+  });
+});

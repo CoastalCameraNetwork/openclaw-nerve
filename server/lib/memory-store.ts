@@ -115,9 +115,9 @@ export class MemoryStoreClass {
       byTopic.set(entry.topic, existing);
     }
 
-    for (const [topic, entries] of entries(byTopic)) {
+    for (const [topic, topicEntries] of Array.from(byTopic.entries())) {
       md += `## ${topic}\n\n`;
-      for (const entry of entries) {
+      for (const entry of topicEntries) {
         md += `- ${entry.content}\n`;
         md += `  - *Source:* ${entry.source} (${new Date(entry.createdAt).toISOString()})\n`;
         if (entry.tags && entry.tags.length > 0) {

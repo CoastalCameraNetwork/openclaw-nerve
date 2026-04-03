@@ -34,7 +34,7 @@ export const PolishReportSchema = z.object({
   suggestions: z.array(z.string()),
 });
 
-export type PolishReport = z.infer<typeof PolishReport>;
+export type PolishReport = z.infer<typeof PolishReportSchema>;
 
 export interface PolishOptions {
   filePath: string;
