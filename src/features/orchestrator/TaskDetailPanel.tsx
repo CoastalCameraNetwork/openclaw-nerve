@@ -12,6 +12,7 @@ import { DependencyPanel } from '../dependencies/DependencyPanel';
 import { DependencyPicker } from '../dependencies/DependencyPicker';
 import { useDependencies } from '../dependencies/useDependencies';
 import { BudgetPanel } from '../budgets';
+import { PlanPanel } from '../plans';
 
 interface TaskHistory {
   task: {
@@ -520,6 +521,11 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
           {/* Budget */}
           <section>
             <BudgetPanel taskId={taskId} />
+          </section>
+
+          {/* Plan-First Workflow */}
+          <section>
+            <PlanPanel taskId={taskId} canEdit={true} canReview={false} />
           </section>
 
           {/* Live Agent Chat */}
