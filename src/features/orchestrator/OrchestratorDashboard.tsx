@@ -24,6 +24,9 @@ import { SupervisorPanel } from './SupervisorPanel';
 import { StalledTaskBanner, type StalledTaskData } from './StalledTaskBanner';
 import { TurboPatternsPanel } from './TurboPatternsPanel';
 import { ImprovementBacklog } from '../improvements/ImprovementBacklog';
+import { ApprovalDialog } from './ApprovalDialog';
+import type { PendingApproval } from './ApprovalDialog';
+import { useApprovals } from './useApprovals';
 
 export type TimeRangeOption = 'today-local' | '24h-rolling' | '48h-rolling' | '72h-rolling' | '7d-rolling' | '14d-rolling' | '30d-rolling' | 'today-utc';
 
@@ -325,6 +328,10 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
   const sessionsRef = useRef<typeof sessions>(sessions);
   const [stalledTasks, setStalledTasks] = useState<Map<string, StalledTaskData>>(new Map());
 
+  // Security approvals
+  const { approvals, approve, deny } = useApprovals();
+  const [selectedApproval, setSelectedApproval] = useState<PendingApproval | null>(null);
+
   // Use the new stats hook
   const { stats: orchestratorStats, loading: statsLoading } = useOrchestratorStats(timeRange);
 
@@ -522,6 +529,13 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
+
+  // Auto-show approval dialog when new approvals arrive
+  useEffect(() => {
+    if (approvals.length > 0 && !selectedApproval) {
+      setSelectedApproval(approvals[0]);
+    }
+  }, [approvals, selectedApproval]);
 
   // Subscribe to SSE events for auto-refresh on task completion
   useServerEvents(
@@ -1017,6 +1031,22 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
           })}
         </div>
       </div>
+
+      {/* Security Approval Dialog */}
+      {selectedApproval && (
+        <ApprovalDialog
+          approval={selectedApproval}
+          onApprove={(id, modifiedCommand) => {
+            approve(id, modifiedCommand);
+            setSelectedApproval(null);
+          }}
+          onDeny={(id, reason) => {
+            deny(id, reason);
+            setSelectedApproval(null);
+          }}
+          onClose={() => setSelectedApproval(null)}
+        />
+      )}
     </div>
   );
 });
