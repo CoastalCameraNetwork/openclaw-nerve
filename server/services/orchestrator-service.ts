@@ -24,6 +24,7 @@ import { runAutomatedPRReview, type PRReviewReport } from './pr-review.js';
 import { canExecuteTask } from './dependency-service.js';
 import { parseAgentSignal, extractAllSignals } from './agent-signals.js';
 import { broadcast } from '../routes/events.js';
+import type { AgentChain } from './agent-chains.js';
 
 export interface OrchestratorTask {
   task_id: string;
@@ -946,5 +947,159 @@ function broadcastAgentSignals(taskId: string, agentName: string, output: string
         requiresHumanInput: signal.requiresHumanInput,
       });
     }
+  }
+}
+
+/**
+ * Build handoff context from previous agent output for chain transitions.
+ * Provides structured summary for the next agent in sequence.
+ */
+function buildHandoffContext(previousAgent: string, previousOutput: string, chainName: string): string {
+  // Extract key information from previous agent output
+  const context = {
+    previousAgent,
+    chainName,
+    summary: previousOutput.substring(0, 2000), // Truncate for context window
+  };
+
+  return `## Context from Previous Agent: ${previousAgent}
+
+This task is part of the "${chainName}" multi-agent workflow.
+
+### Previous Agent Output Summary:
+${context.summary}
+
+### Your Role:
+Continue the workflow based on the work completed by the previous agent.
+Build upon their findings and recommendations.`;
+}
+
+/**
+ * Execute a task using an agent chain.
+ * Chains enable sequential multi-agent workflows with automatic handoffs.
+ */
+export async function executeChain(
+  taskId: string,
+  chainId: string
+): Promise<{ success: boolean; error?: string }> {
+  const { getChain, getNextStep } = await import('./agent-chains.js');
+  const chain = getChain(chainId);
+
+  if (!chain) {
+    return { success: false, error: `Unknown chain: ${chainId}` };
+  }
+
+  const store = getKanbanStore();
+  const task = await store.getTask(taskId);
+
+  if (!task) {
+    return { success: false, error: 'Task not found' };
+  }
+
+  try {
+    // Store chain state in metadata
+    const newVersion = task.version + 1;
+    await store.updateTask(taskId, task.version, {
+      version: newVersion,
+      metadata: {
+        ...(task.metadata as Record<string, unknown> || {}),
+        chainId,
+        chainStep: 0,
+        chainStatus: 'running',
+      },
+    } as never);
+
+    // Start first step
+    await executeChainStep(taskId, chain, 0);
+    return { success: true };
+  } catch (error) {
+    console.error('Chain execution failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Chain failed' };
+  }
+}
+
+/**
+ * Execute a single step in the chain and schedule the next step.
+ */
+async function executeChainStep(
+  taskId: string,
+  chain: AgentChain,
+  stepIndex: number
+): Promise<void> {
+  const { getNextStep } = await import('./agent-chains.js');
+  const step = chain.steps[stepIndex];
+
+  if (!step) {
+    // Chain complete
+    const store = getKanbanStore();
+    const task = await store.getTask(taskId);
+    if (task) {
+      await store.updateTask(taskId, task.version, {
+        metadata: {
+          ...(task.metadata as Record<string, unknown> || {}),
+          chainStatus: 'complete',
+          chainCompletedAt: Date.now(),
+        },
+      } as never);
+    }
+    broadcast('chain.complete', { taskId, chainId: chain.id });
+    return;
+  }
+
+  const store = getKanbanStore();
+  const task = await store.getTask(taskId);
+  if (!task) return;
+
+  // Build prompt with handoff context if not first step
+  let prompt = step.prompt || `Continue work on this task as part of the "${chain.name}" workflow.`;
+
+  if (stepIndex > 0) {
+    const previousStep = chain.steps[stepIndex - 1];
+    const previousOutput = (task.metadata as Record<string, unknown>)?.[`${previousStep.agent}Output`] as string || '';
+    prompt = buildHandoffContext(previousStep.agent, previousOutput, chain.name) + '\n\n' + prompt;
+  }
+
+  // Execute agent via gateway
+  const result = await invokeGatewayTool('sessions_spawn', {
+    task: prompt,
+    label: `chain-${chain.id}-${step.agent}`,
+    runtime: 'subagent',
+    mode: 'session',
+    thinking: step.thinking || 'medium',
+    cleanup: 'keep',
+  }, step.timeoutMs || 300000);
+
+  // Parse response - cast to known session_spawn result shape
+  const resultTyped = result as { status?: string; output?: string | Record<string, unknown>; error?: string } | undefined;
+  const output = resultTyped?.output ? String(typeof resultTyped.output === 'string' ? resultTyped.output : JSON.stringify(resultTyped.output)) : '';
+  const success = resultTyped?.status === 'done' || !resultTyped?.error;
+
+  // Store output for next handoff
+  const currentTask = await store.getTask(taskId);
+  if (currentTask) {
+    await store.updateTask(taskId, currentTask.version, {
+      metadata: {
+        ...(currentTask.metadata as Record<string, unknown> || {}),
+        chainStep: stepIndex,
+        currentAgent: step.agent,
+        [`${step.agent}Output`]: output,
+        [`${step.agent}Success`]: success,
+      },
+    } as never);
+  }
+
+  // Broadcast progress
+  broadcast('chain.step', {
+    taskId,
+    chainId: chain.id,
+    stepIndex,
+    agent: step.agent,
+    success,
+  });
+
+  // Schedule next step with delay
+  const nextStep = getNextStep(chain, step.agent);
+  if (nextStep) {
+    setTimeout(() => executeChainStep(taskId, chain, stepIndex + 1), 2000);
   }
 }
