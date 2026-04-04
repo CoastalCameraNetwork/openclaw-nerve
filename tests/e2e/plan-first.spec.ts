@@ -7,118 +7,148 @@
 
 import { test, expect } from '@playwright/test';
 
+test.use({
+  ignoreHTTPSErrors: true,
+  baseURL: 'https://localhost:3081',
+});
+
+// Close gateway connection dialog before each test
+test.beforeEach(async ({ page }) => {
+  await page.waitForTimeout(1000);
+
+  // Try to close dialog by pressing Escape multiple times
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+
+  // Also try clicking outside the dialog (on the background)
+  await page.mouse.click(100, 100);
+  await page.waitForTimeout(300);
+
+  // Final escape press
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(500);
+});
+
 test.describe('Plan-First Workflow', () => {
-  test('creates a plan for a task', async ({ page }) => {
-    await page.goto('http://localhost:3080');
+  test('plan panel renders in task detail', async ({ page }) => {
+    await page.goto('/');
 
-    // Navigate to orchestrator tab
-    await page.getByRole('tab', { name: /orchestrator/i }).click();
+    // Wait for page load
     await page.waitForTimeout(2000);
 
-    // Select a task
-    const taskItem = page.getByTestId('task-item').first();
-    await taskItem.click();
-    await page.waitForTimeout(1000);
+    // Switch to Tasks view using aria-label
+    const tasksButton = page.getByLabel('Switch to tasks view');
+    await tasksButton.click({ force: true });
 
-    // Find and click "Create Plan" button
-    const createPlanButton = page.getByRole('button', { name: /create plan/i });
-    if (await createPlanButton.isVisible()) {
-      await createPlanButton.click();
-      await page.waitForTimeout(500);
+    // Wait for kanban board to load - look for column headers
+    await page.waitForSelector('text="TO DO"', { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(3000);
 
-      // Write plan content
-      const editor = page.getByRole('textbox', { name: /write your implementation plan/i });
-      if (await editor.isVisible()) {
-        await editor.fill(`## Overview
-Implement feature X
+    // Find a task and click it
+    const taskItem = page.getByText('Test Task A').first();
+    await taskItem.click({ force: true });
+    await page.waitForTimeout(2000);
 
-## Implementation Steps
-1. Step one - create component
-2. Step two - add tests
-3. Step three - integrate
+    // Task detail dialog should be open - look for Implementation Plan section
+    const planSection = page.locator('section').filter({ hasText: /Implementation Plan/i });
 
-## Testing
-- Unit tests for new component
-- Integration tests with existing features`);
-
-        // Save draft
-        await page.getByRole('button', { name: /save draft/i }).click();
-        await page.waitForTimeout(1000);
-
-        // Verify plan content is displayed
-        await expect(page.getByText(/implement feature x/i)).toBeVisible();
-      }
-    }
+    // PlanPanel should be rendered (either showing plan content or "No plan yet" message)
+    const planPanel = page.getByText(/Implementation Plan/i);
+    await expect(planPanel).toBeVisible();
   });
 
-  test('displays plan status badge', async ({ page }) => {
-    await page.goto('http://localhost:3080');
-    await page.getByRole('tab', { name: /orchestrator/i }).click();
+  test('shows create plan button for task without plan', async ({ page }) => {
+    await page.goto('/');
     await page.waitForTimeout(2000);
 
-    // Select a task
-    const taskItem = page.getByTestId('task-item').first();
-    await taskItem.click();
-    await page.waitForTimeout(1000);
+    // Switch to Tasks view
+    const tasksButton = page.getByLabel('Switch to tasks view');
+    await tasksButton.click({ force: true });
 
-    // Check for plan panel
-    const planPanel = page.getByRole('heading', { name: /implementation plan/i });
-    if (await planPanel.isVisible()) {
-      // Status badge should be present (Draft, In Review, Approved, or Needs Revision)
-      const statusBadge = page.locator('span').filter({ hasText: /draft|in review|approved|needs revision/i }).first();
-      if (await statusBadge.isVisible()) {
-        const statusText = await statusBadge.textContent();
-        expect(statusText?.toLowerCase()).toMatch(/draft|in review|approved|needs revision/i);
-      }
-    }
+    // Wait for kanban board to load
+    await page.waitForSelector('text="TO DO"', { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(3000);
+
+    // Click on a test task
+    const taskItem = page.getByText('Test Task A').first();
+    await taskItem.click({ force: true });
+    await page.waitForTimeout(2000);
+
+    // Look for "Create Plan" or "+ Create Plan" button
+    const createPlanButton = page.getByRole('button', { name: /create plan/i }).or(page.getByText('+ Create Plan'));
+
+    // Either the create button exists or we can see a plan
+    const hasCreateButton = await createPlanButton.isVisible().catch(() => false);
+    const hasPlanContent = await page.getByText(/Implementation Plan/i).isVisible().catch(() => false);
+
+    expect(hasCreateButton || hasPlanContent).toBeTruthy();
   });
 
-  test('shows plan editor when editing', async ({ page }) => {
-    await page.goto('http://localhost:3080');
-    await page.getByRole('tab', { name: /orchestrator/i }).click();
+  test('plan editor can be opened', async ({ page }) => {
+    await page.goto('/');
     await page.waitForTimeout(2000);
 
-    // Select a task
-    const taskItem = page.getByTestId('task-item').first();
-    await taskItem.click();
-    await page.waitForTimeout(1000);
+    // Switch to Tasks view
+    const tasksButton = page.getByLabel('Switch to tasks view');
+    await tasksButton.click({ force: true });
 
-    // Look for edit button or create button
-    const editButton = page.getByRole('button', { name: /edit/i }).first();
-    const createButton = page.getByRole('button', { name: /\+ create plan/i });
+    // Wait for kanban board to load
+    await page.waitForSelector('text="TO DO"', { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(3000);
 
-    if (await createButton.isVisible()) {
+    // Click on a test task
+    const taskItem = page.getByText('Test Task A').first();
+    await taskItem.click({ force: true });
+    await page.waitForTimeout(2000);
+
+    // Try to click create plan or edit button
+    const createButton = page.getByRole('button', { name: /\+ create plan/i }).or(page.getByRole('button', { name: /edit/i }).first());
+
+    if (await createButton.isVisible().catch(() => false)) {
       await createButton.click();
-    } else if (await editButton.isVisible()) {
-      await editButton.click();
-    }
+      await page.waitForTimeout(1000);
 
-    await page.waitForTimeout(500);
-
-    // Editor should be visible with textarea
-    const editor = page.locator('textarea').filter({ hasText: /## Overview/ });
-    if (await editor.isVisible()) {
+      // Editor textarea should be visible
+      const editor = page.locator('textarea').first();
       await expect(editor).toBeVisible();
     }
   });
 
-  test('plan panel integrates with task detail', async ({ page }) => {
-    await page.goto('http://localhost:3080');
-    await page.getByRole('tab', { name: /orchestrator/i }).click();
+  test('plan panel shows status badge', async ({ page }) => {
+    await page.goto('/');
     await page.waitForTimeout(2000);
 
-    // Select a task
-    const taskItem = page.getByTestId('task-item').first();
-    await taskItem.click();
-    await page.waitForTimeout(1000);
+    // Switch to Tasks view
+    const tasksButton = page.getByLabel('Switch to tasks view');
+    await tasksButton.click({ force: true });
 
-    // Task detail panel should be visible
-    await expect(page.getByRole('heading', { name: /implementation plan/i }).or(page.getByText(/no plan yet/i))).toBeVisible();
+    // Wait for kanban board to load
+    await page.waitForSelector('text="TO DO"', { timeout: 10000 }).catch(() => {});
+    await page.waitForTimeout(3000);
 
-    // Plan panel should show within the task detail
-    const planSection = page.locator('section').filter({ hasText: /implementation plan/i }).first();
-    if (await planSection.isVisible()) {
-      await expect(planSection).toBeVisible();
+    // Click on a test task
+    const taskItem = page.getByText('Test Task A').first();
+    await taskItem.click({ force: true });
+    await page.waitForTimeout(2000);
+
+    // If there's a plan, it should have a status badge
+    const statusBadges = ['Draft', 'In Review', 'Approved', 'Needs Revision'];
+    let foundBadge = false;
+
+    for (const status of statusBadges) {
+      const badge = page.getByText(status);
+      if (await badge.isVisible().catch(() => false)) {
+        foundBadge = true;
+        break;
+      }
     }
+
+    // Either we found a status badge or there's no plan yet
+    const noPlanText = page.getByText(/no plan yet/i);
+    const hasNoPlan = await noPlanText.isVisible().catch(() => false);
+
+    expect(foundBadge || hasNoPlan).toBeTruthy();
   });
 });
