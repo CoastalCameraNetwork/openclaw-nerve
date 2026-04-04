@@ -23,6 +23,7 @@ import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { useCreateTask, useRoutingPreview } from './useOrchestrator';
 import { AgentBadges } from './AgentBadges';
+import { useAgentChains } from './useAgentChains';
 
 interface CreateOrchestratedTaskDialogProps {
   open: boolean;
@@ -54,13 +55,17 @@ export function CreateOrchestratedTaskDialog({
   const [gateMode, setGateMode] = useState<'audit-only' | 'gate-on-write' | 'gate-on-deploy'>('audit-only');
   const [executeImmediately, setExecuteImmediately] = useState(false);
   const [maxCostUSD, setMaxCostUSD] = useState<string>('');
+  const [selectedChain, setSelectedChain] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
-  
+
   const titleRef = useRef<HTMLInputElement>(null);
-  
+
   // Orchestrator hooks
   const { createTask, loading: creating } = useCreateTask();
   const { preview, loading: previewing, previewRouting, clearPreview } = useRoutingPreview();
+
+  // Agent chains hook
+  const { chains, loading: chainsLoading, loadChains } = useAgentChains();
 
   // Reset form on close
   useEffect(() => {
@@ -71,10 +76,18 @@ export function CreateOrchestratedTaskDialog({
       setGateMode('audit-only');
       setExecuteImmediately(false);
       setMaxCostUSD('');
+      setSelectedChain('');
       setError(null);
       clearPreview();
     }
   }, [open, clearPreview]);
+
+  // Load chains on open
+  useEffect(() => {
+    if (open) {
+      loadChains();
+    }
+  }, [open, loadChains]);
 
   // Focus title on open
   useEffect(() => {
@@ -241,6 +254,34 @@ export function CreateOrchestratedTaskDialog({
               )}
             </div>
           )}
+
+          {/* Chain Selection */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium">Agent Chain (Optional)</label>
+            <select
+              value={selectedChain}
+              onChange={(e) => setSelectedChain(e.target.value)}
+              disabled={chainsLoading}
+              className="w-full h-10 px-3 text-sm bg-background border border-input rounded-md focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+            >
+              <option value="">No chain (standard execution)</option>
+              {chains.map((chain) => (
+                <option key={chain.id} value={chain.id}>
+                  {chain.name}
+                </option>
+              ))}
+            </select>
+            {selectedChain && chains.find(c => c.id === selectedChain) && (
+              <p className="text-xs text-muted-foreground">
+                {chains.find(c => c.id === selectedChain)?.description}
+              </p>
+            )}
+            {chainsLoading && (
+              <p className="text-xs text-muted-foreground flex items-center gap-1">
+                <Loader2 size={12} className="animate-spin" /> Loading chains...
+              </p>
+            )}
+          </div>
 
           {/* Priority and Gate Mode */}
           <div className="grid grid-cols-2 gap-4">

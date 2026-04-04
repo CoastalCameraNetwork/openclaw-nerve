@@ -36,7 +36,7 @@ export function useAgentChains(): UseAgentChainsResult {
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch('/api/orchestrator/chains', {
+      const res = await fetch('/api/chains', {
         credentials: 'include',
       });
 
@@ -54,17 +54,19 @@ export function useAgentChains(): UseAgentChainsResult {
   }, []);
 
   const startChain = useCallback(async (taskId: string, chainId: string) => {
-    const res = await fetch(`/api/orchestrator/tasks/${taskId}/start-chain`, {
+    const res = await fetch(`/api/chains/${chainId}/execute`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ chainId }),
+      body: JSON.stringify({ taskId }),
     });
 
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       throw new Error(data.error || 'Failed to start chain');
     }
+
+    return await res.json();
   }, []);
 
   return {
