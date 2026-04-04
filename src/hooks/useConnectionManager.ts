@@ -49,7 +49,9 @@ async function fetchConnectDefaults(): Promise<{ wsUrl: string; token: string | 
 export function useConnectionManager(): ConnectionManagerState {
   const { connectionState, connect, disconnect } = useGateway();
 
-  const [dialogOpen, setDialogOpen] = useState(true);
+  // Demo mode bypasses gateway connection dialog (for E2E tests)
+  const isDemoMode = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('demo-mode') === 'true';
+  const [dialogOpen, setDialogOpen] = useState(isDemoMode ? false : true);
 
   // Editable connection settings (local state for settings drawer)
   // Lazy initializers avoid re-parsing sessionStorage on every render

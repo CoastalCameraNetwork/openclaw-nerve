@@ -12,23 +12,10 @@ test.use({
   baseURL: 'https://localhost:3081',
 });
 
-// Close gateway connection dialog before each test
+// Navigate with demo-mode to bypass gateway connection dialog
 test.beforeEach(async ({ page }) => {
+  await page.goto('/?demo-mode=true');
   await page.waitForTimeout(1000);
-
-  // Try to close dialog by pressing Escape multiple times
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(300);
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(300);
-
-  // Also try clicking outside the dialog (on the background)
-  await page.mouse.click(100, 100);
-  await page.waitForTimeout(300);
-
-  // Final escape press
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(500);
 });
 
 test.describe('Plan-First Workflow', () => {
