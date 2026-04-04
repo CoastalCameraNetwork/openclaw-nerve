@@ -20,8 +20,6 @@ test.beforeEach(async ({ page }) => {
 
 test.describe('Plan-First Workflow', () => {
   test('plan panel renders in task detail', async ({ page }) => {
-    await page.goto('/');
-
     // Wait for page load
     await page.waitForTimeout(2000);
 
@@ -47,7 +45,6 @@ test.describe('Plan-First Workflow', () => {
   });
 
   test('shows create plan button for task without plan', async ({ page }) => {
-    await page.goto('/');
     await page.waitForTimeout(2000);
 
     // Switch to Tasks view
@@ -74,7 +71,6 @@ test.describe('Plan-First Workflow', () => {
   });
 
   test('plan editor can be opened', async ({ page }) => {
-    await page.goto('/');
     await page.waitForTimeout(2000);
 
     // Switch to Tasks view
@@ -104,7 +100,6 @@ test.describe('Plan-First Workflow', () => {
   });
 
   test('plan panel shows status badge', async ({ page }) => {
-    await page.goto('/');
     await page.waitForTimeout(2000);
 
     // Switch to Tasks view
