@@ -13,7 +13,23 @@ test.use({
 });
 
 // Navigate with demo-mode to bypass gateway connection dialog
-test.beforeEach(async ({ page }) => {
+// and create test tasks via API
+test.beforeEach(async ({ page, request }) => {
+  // Create test tasks via kanban API
+  try {
+    await request.post('/api/kanban/tasks', {
+      data: {
+        title: 'Test Task A',
+        description: 'Test task for Plan-First Workflow E2E tests',
+        priority: 'normal',
+        status: 'todo',
+        createdBy: 'e2e-test',
+      },
+    });
+  } catch (e) {
+    // Task might already exist, continue
+  }
+
   await page.goto('/?demo-mode=true');
   await page.waitForTimeout(1000);
 });
