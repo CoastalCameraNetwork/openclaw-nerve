@@ -13,7 +13,7 @@ test.use({
   trace: 'retain-on-failure',
 });
 
-test.beforeEach(async ({ page, request }) => {
+test.beforeEach(async ({ page }) => {
   // Setup demo mode
   await page.addInitScript(() => {
     localStorage.clear();

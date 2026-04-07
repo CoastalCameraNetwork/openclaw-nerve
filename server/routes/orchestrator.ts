@@ -837,7 +837,7 @@ app.post('/api/orchestrator/pr/:number/merge', rateLimitGeneral, async (c) => {
 
 /**
  * POST /api/orchestrator/task/:id/review
- * Run automated PR review using specialist agents
+ * Run comprehensive PR review (security, quality, diff, completeness) with confidence scoring
  */
 app.post('/api/orchestrator/task/:id/review', rateLimitGeneral, async (c) => {
   try {
@@ -849,30 +849,73 @@ app.post('/api/orchestrator/task/:id/review', rateLimitGeneral, async (c) => {
       return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
     }
 
-    if (!task.pr) {
-      return c.json({ error: 'Task has no PR', code: ErrorCode.PR_NOT_FOUND }, 400);
-    }
-
     // Detect project type
     const { detectProject } = await import('../lib/project-registry.js');
     const project = detectProject(task.description || task.title, task.labels || []);
 
-    // Run automated review
-    const { runAutomatedPRReview } = await import('../services/pr-review.js');
-    const report = await runAutomatedPRReview(
-      taskId,
-      task.pr.number,
-      project?.type
-    );
+    // Build review context
+    const reviewContext = {
+      prNumber: task.pr?.number,
+      title: task.title,
+      description: task.description,
+      taskDescription: task.description,
+      projectType: project?.type,
+      projectPath: project?.localPath,
+    };
 
-    // Post comments to PR
-    const { postReviewCommentsToPR } = await import('../services/pr-review.js');
-    await postReviewCommentsToPR(task.pr.number, report);
+    // Run comprehensive review
+    const { runComprehensivePRReview } = await import('../services/comprehensive-pr-review.js');
+    const report = await runComprehensivePRReview(taskId, reviewContext);
+
+    // Post comments to PR if we have a PR number
+    if (task.pr?.number) {
+      const { postReviewCommentsToPR } = await import('../services/pr-review.js');
+      // Map ReviewIssue to PRReviewReport issue type (exclude 'nit' severity)
+      const mappedIssues = [...report.securityReview.issues, ...report.qualityReview.issues]
+        .slice(0, 10)
+        .map(issue => ({
+          severity: issue.severity === 'nit' ? 'low' as const : issue.severity,
+          description: `${issue.title}: ${issue.description}`,
+          file: issue.file,
+          line: issue.line,
+          suggestion: issue.suggestion,
+        }));
+      await postReviewCommentsToPR(task.pr.number, {
+        taskId,
+        prNumber: task.pr.number,
+        reviews: [{
+          passed: report.passed,
+          reviewer: 'comprehensive-review',
+          summary: `Overall Score: ${report.overallScore}/100 (${report.confidenceLevel} confidence)`,
+          issues: mappedIssues,
+          timestamp: Date.now(),
+        }],
+        passed: report.passed,
+        criticalIssues: report.criticalIssues,
+        highIssues: report.highIssues,
+        mediumIssues: report.mediumIssues,
+        lowIssues: report.lowIssues,
+        recommendations: report.recommendations,
+        timestamp: Date.now(),
+      });
+    }
+
+    // Store review report in task metadata
+    const existingAgentOutput = (task.metadata?.agentOutput || {}) as Record<string, any>;
+    const updatedTask = await store.updateTask(taskId, task.version, {
+      metadata: {
+        ...task.metadata,
+        agentOutput: {
+          ...existingAgentOutput,
+          reviewReport: report,
+        },
+      },
+    });
 
     // If review passed, move to REVIEW status
     // If failed, keep in in-progress for fixes
     if (report.passed) {
-      await store.updateTask(taskId, task.version, {
+      await store.updateTask(updatedTask.id, updatedTask.version, {
         status: 'review',
       });
     }
@@ -886,12 +929,29 @@ app.post('/api/orchestrator/task/:id/review', rateLimitGeneral, async (c) => {
 
 /**
  * GET /api/orchestrator/task/:id/review
- * Get latest PR review report
+ * Get latest PR review report from task metadata
  */
 app.get('/api/orchestrator/task/:id/review', rateLimitGeneral, async (c) => {
-  // Would retrieve stored review report from task metadata
-  // For now, return placeholder
-  return c.json({ success: true, message: 'Review endpoint ready' });
+  try {
+    const taskId = c.req.param('id');
+    const store = getKanbanStore();
+    const task = await store.getTask(taskId);
+
+    if (!task) {
+      return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+
+    const reviewReport = ((task.metadata as any)?.agentOutput?.reviewReport) as any;
+
+    if (!reviewReport) {
+      return c.json({ error: 'No review report found', code: ErrorCode.NO_REVIEW_REPORT }, 404);
+    }
+
+    return c.json({ success: true, report: reviewReport });
+  } catch (error) {
+    console.error('Failed to get review report:', error);
+    return c.json({ error: 'Failed to get review report', code: ErrorCode.GATEWAY_ERROR }, 500);
+  }
 });
 
 /**

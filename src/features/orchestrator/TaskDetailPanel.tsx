@@ -13,6 +13,7 @@ import { DependencyPicker } from '../dependencies/DependencyPicker';
 import { useDependencies } from '../dependencies/useDependencies';
 import { BudgetPanel } from '../budgets';
 import { PlanPanel } from '../plans';
+import { ReviewResultsPanel } from './ReviewResultsPanel';
 
 interface TaskHistory {
   task: {
@@ -731,6 +732,14 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
                   </div>
                 )}
               </div>
+            </section>
+          )}
+
+          {/* Comprehensive Review Results */}
+          {history.pr && (
+            <section>
+              <h3 className="text-sm font-semibold mb-3">Comprehensive Review</h3>
+              <ReviewResultsPanel taskId={taskId} />
             </section>
           )}
 
