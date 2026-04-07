@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { X, Clock, CheckCircle2, AlertCircle, FileText, GitPullRequest, User, Play, Square, Loader2, Edit2, Save, MessageSquare } from 'lucide-react';
+import { X, Clock, CheckCircle2, AlertCircle, FileText, GitPullRequest, User, Play, Square, Loader2, Edit2, Save, MessageSquare, GitBranch, Send, TreeDeciduous } from 'lucide-react';
 import { AGENT_AVATARS } from './OrchestratorDashboard';
 import { TaskChatPanel } from './TaskChatPanel';
 import { useTaskActions } from './useOrchestrator';
@@ -89,6 +89,25 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
 
+  // Session tree navigation
+  const [sessionTree, setSessionTree] = useState<Array<{
+    sessionKey: string;
+    label: string;
+    status: 'running' | 'completed' | 'failed';
+    createdAt: number;
+    updatedAt: number;
+    parentId?: string;
+  }> | null>(null);
+  const [currentSessionKey, setCurrentSessionKey] = useState<string | undefined>(undefined);
+  const [expandedSessionTree, setExpandedSessionTree] = useState(false);
+
+  // Steering input
+  const [steeringMessage, setSteeringMessage] = useState('');
+  const [sendingSteering, setSendingSteering] = useState(false);
+
+  // Compaction status
+  const [compactionStatus, setCompactionStatus] = useState<{ needsCompaction: boolean; currentTokens: number; threshold: number } | null>(null);
+
   // Dependency management
   const [showDependencyPicker, setShowDependencyPicker] = useState(false);
   const [allTasks, setAllTasks] = useState<Array<{ id: string; title: string; status: string }>>([]);
@@ -147,9 +166,111 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
     }
   }, [taskId]);
 
+  // Fetch session tree
+  const fetchSessionTree = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/orchestrator/task/${taskId}/tree`, {
+        credentials: 'include',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSessionTree(data.tree || []);
+        setCurrentSessionKey(data.currentSession);
+      }
+    } catch (err) {
+      console.error('Failed to fetch session tree:', err);
+    }
+  }, [taskId]);
+
+  // Fetch compaction status
+  const fetchCompactionStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/orchestrator/task/${taskId}/compaction-status`, {
+        credentials: 'include',
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCompactionStatus(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch compaction status:', err);
+    }
+  }, [taskId]);
+
+  // Handle sending steering message
+  const handleSendSteering = useCallback(async () => {
+    if (!steeringMessage.trim()) return;
+    setSendingSteering(true);
+    try {
+      const res = await fetch(`/api/orchestrator/task/${taskId}/steer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ message: steeringMessage.trim(), source: 'user' as const }),
+      });
+      if (res.ok) {
+        setSteeringMessage('');
+        setActionMessage('Steering message sent');
+      } else {
+        const data = await res.json();
+        setActionMessage(`Failed to send: ${data.error || 'Unknown error'}`);
+      }
+    } catch (err) {
+      console.error('Failed to send steering message:', err);
+      setActionMessage(`Failed to send: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    } finally {
+      setSendingSteering(false);
+    }
+  }, [taskId, steeringMessage]);
+
+  // Handle switching session
+  const handleSwitchSession = useCallback(async (sessionKey: string) => {
+    try {
+      const res = await fetch(`/api/orchestrator/task/${taskId}/switch-session/${sessionKey}`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (res.ok) {
+        setCurrentSessionKey(sessionKey);
+        setActionMessage('Session switched');
+        fetchHistory();
+      } else {
+        const data = await res.json();
+        setActionMessage(`Failed to switch: ${data.error || 'Unknown error'}`);
+      }
+    } catch (err) {
+      console.error('Failed to switch session:', err);
+      setActionMessage(`Failed to switch: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
+  }, [taskId, fetchHistory]);
+
+  // Handle context compaction
+  const handleCompactContext = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/orchestrator/task/${taskId}/compact`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ reason: 'manual' }),
+      });
+      if (res.ok) {
+        setActionMessage('Context compacted');
+        fetchCompactionStatus();
+      } else {
+        const data = await res.json();
+        setActionMessage(`Failed to compact: ${data.error || 'Unknown error'}`);
+      }
+    } catch (err) {
+      console.error('Failed to compact context:', err);
+      setActionMessage(`Failed to compact: ${err instanceof Error ? err.message : 'Unknown error'}`);
+    }
+  }, [taskId, fetchCompactionStatus]);
+
   useEffect(() => {
     fetchHistory();
-  }, [fetchHistory]);
+    fetchSessionTree();
+    fetchCompactionStatus();
+  }, [fetchHistory, fetchSessionTree, fetchCompactionStatus]);
 
   const handleClose = useCallback(() => {
     if (dirty && !window.confirm('You have unsaved changes. Discard?')) return;
@@ -537,6 +658,132 @@ export function TaskDetailPanel({ taskId, onClose }: TaskDetailPanelProps) {
             </h3>
             <TaskChatPanel taskId={taskId} />
           </section>
+
+          {/* Session Tree Navigation */}
+          {sessionTree && sessionTree.length > 0 && (
+            <section>
+              <h3 className="text-sm font-semibold mb-3 inline-flex items-center gap-2">
+                <TreeDeciduous size={16} />
+                Session History
+                <button
+                  onClick={() => setExpandedSessionTree(!expandedSessionTree)}
+                  className="text-xs text-muted-foreground hover:text-foreground ml-2"
+                >
+                  {expandedSessionTree ? 'Hide' : 'Show'} ({sessionTree.length})
+                </button>
+              </h3>
+              {expandedSessionTree && (
+                <div className="space-y-2 border rounded-lg p-3 bg-muted/30">
+                  {sessionTree.map((session) => {
+                    const isCurrent = session.sessionKey === currentSessionKey;
+                    return (
+                      <div
+                        key={session.sessionKey}
+                        className={`flex items-center justify-between p-2 rounded-md border ${
+                          isCurrent ? 'bg-primary/10 border-primary/30' : 'bg-background'
+                        }`}
+                      >
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-medium truncate">{session.label || 'Session'}</div>
+                          <div className="text-[10px] text-muted-foreground">
+                            {new Date(session.createdAt).toLocaleString()}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                            session.status === 'running' ? 'bg-cyan-500/20 text-cyan-400' :
+                            session.status === 'completed' ? 'bg-green-500/20 text-green-400' :
+                            'bg-red-500/20 text-red-400'
+                          }`}>
+                            {session.status}
+                          </span>
+                          {!isCurrent && (
+                            <button
+                              onClick={() => handleSwitchSession(session.sessionKey)}
+                              className="text-xs px-2 py-1 rounded-md bg-muted hover:bg-muted/70 transition-colors"
+                              title="Switch to this session"
+                            >
+                              Switch
+                            </button>
+                          )}
+                          {isCurrent && (
+                            <span className="text-[10px] text-primary font-medium">Active</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+          )}
+
+          {/* Steering Input */}
+          <section>
+            <h3 className="text-sm font-semibold mb-3 inline-flex items-center gap-2">
+              <Send size={16} />
+              Steering Message
+            </h3>
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">
+                Send a steering message to interrupt the current agent execution. Useful for long-running tasks.
+              </p>
+              <div className="flex gap-2">
+                <textarea
+                  value={steeringMessage}
+                  onChange={(e) => setSteeringMessage(e.target.value)}
+                  placeholder="Enter steering message (e.g., 'Focus on fixing the login bug first')"
+                  rows={2}
+                  className="flex-1 min-h-[60px] rounded-md border border-input bg-transparent px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none resize-y"
+                />
+                <button
+                  onClick={handleSendSteering}
+                  disabled={sendingSteering || !steeringMessage.trim()}
+                  className="px-4 py-2 rounded-md bg-primary text-primary-foreground hover:bg-primary/90 font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed self-end inline-flex items-center gap-1.5"
+                >
+                  {sendingSteering ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                  Send
+                </button>
+              </div>
+            </div>
+          </section>
+
+          {/* Context Compaction */}
+          {compactionStatus && (
+            <section>
+              <h3 className="text-sm font-semibold mb-3 inline-flex items-center gap-2">
+                <GitBranch size={16} />
+                Context Compaction
+              </h3>
+              <div className="p-3 border rounded-lg bg-muted/30 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-muted-foreground">
+                    Current tokens: {compactionStatus.currentTokens.toLocaleString()}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    Threshold: {compactionStatus.threshold.toLocaleString()}
+                  </span>
+                </div>
+                {compactionStatus.needsCompaction ? (
+                  <div className="flex items-center gap-2">
+                    <AlertCircle size={14} className="text-amber-400" />
+                    <span className="text-xs text-amber-400 font-medium">Above threshold - compaction recommended</span>
+                    <button
+                      onClick={handleCompactContext}
+                      className="text-xs px-3 py-1.5 rounded-md bg-amber-600 hover:bg-amber-500 text-white font-medium transition-colors inline-flex items-center gap-1.5 ml-auto"
+                    >
+                      Compact Now
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 size={14} className="text-green-400" />
+                    <span className="text-xs text-green-400 font-medium">Context size is healthy</span>
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
 
           {/* Agent Execution */}
           {history.agents && history.agents.length > 0 && (

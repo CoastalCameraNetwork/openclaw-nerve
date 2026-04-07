@@ -42,6 +42,35 @@ export interface OrchestratorTask {
   created_at: string;
 }
 
+/**
+ * Tool execution hook configuration for orchestrator tasks.
+ * Allows intercepting and modifying tool execution at the orchestrator level.
+ */
+export interface TaskExecutionHooks {
+  /**
+   * Called before a tool is executed. Can block execution by returning { block: true, reason: string }.
+   * Note: This hooks into orchestrator-level tool calls, not individual LLM tool calls within agent sessions.
+   * For fine-grained tool interception, use OpenClaw's gateway-level hooks.
+   */
+  beforeToolCall?: (params: {
+    taskId: string;
+    agentName: string;
+    toolName: string;
+    args: unknown;
+  }) => Promise<{ block: boolean; reason?: string } | undefined>;
+
+  /**
+   * Called after a tool completes execution. Can modify the result.
+   */
+  afterToolCall?: (params: {
+    taskId: string;
+    agentName: string;
+    toolName: string;
+    result: unknown;
+    isError: boolean;
+  }) => Promise<{ result?: unknown; isError?: boolean } | undefined>;
+}
+
 export interface AgentExecutionResult {
   agent_name: string;
   success: boolean;

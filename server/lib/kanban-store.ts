@@ -86,6 +86,11 @@ export interface TaskRunLink {
   endedAt?: number;
   status: 'running' | 'done' | 'error' | 'aborted';
   error?: string;
+  parentId?: string;  // For session tree branching (pi-mono pattern)
+  branchPoint?: {     // Track where this branch originated
+    messageId: string;
+    timestamp: number;
+  };
 }
 
 export interface KanbanTask {
@@ -111,6 +116,18 @@ export interface KanbanTask {
   estimateMin?: number;
   actualMin?: number;
   feedback: TaskFeedback[];
+
+  // Steering and follow-up queues (pi-mono agent-loop pattern)
+  steeringQueue?: Array<{
+    message: string;
+    addedAt: number;
+    source: 'user' | 'system' | 'extension';
+  }>;
+  followUpQueue?: Array<{
+    message: string;
+    addedAt: number;
+    source: 'user' | 'system' | 'extension';
+  }>;
 
   // Generic metadata for extensibility (orchestrator-specific fields)
   metadata?: Record<string, unknown>;
@@ -861,6 +878,8 @@ data.tasks = data.tasks.map((task) => {
         | 'pr'
         | 'metadata'
         | 'dependencies'
+        | 'steeringQueue'
+        | 'followUpQueue'
       >
     >,
     actor?: string,

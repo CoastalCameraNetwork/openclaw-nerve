@@ -27,6 +27,7 @@ import { getKanbanStore, type TaskActor, type KanbanTask, type AuditEntry } from
 import { invokeGatewayTool } from '../lib/gateway-client.js';
 import { getSessionTokenUsage } from './tokens.js';
 import { getRecentSessions, getSessionsForTask } from '../services/session-fs-reader.js';
+import { handleCompactionRequest, needsCompaction } from '../services/session-compaction.js';
 
 const app = new Hono();
 
@@ -1591,4 +1592,470 @@ app.post('/api/orchestrator/approvals/:id/deny', rateLimitGeneral, async (c) => 
   approvalQueue.deny(id, reason);
 
   return c.json({ success: true, approvalId: id });
+});
+
+/**
+ * POST /api/orchestrator/task/:id/steer
+ * Add a steering message to interrupt the current agent turn.
+ * Steering messages are delivered after the current tool executions complete.
+ */
+app.post('/api/orchestrator/task/:id/steer', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const store = getKanbanStore();
+    const task = await store.getTask(taskId);
+
+    if (!task) {
+      return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+
+    const body = await c.req.json();
+    const { message, source = 'user' as 'user' | 'system' | 'extension' } = body;
+
+    if (!message || typeof message !== 'string') {
+      return c.json({ error: 'Message is required', code: ErrorCode.INVALID_REQUEST }, 400);
+    }
+
+    // Add to steering queue
+    const steeringEntry = {
+      message,
+      addedAt: Date.now(),
+      source,
+    };
+
+    const currentSteeringQueue = task.steeringQueue || [];
+    const updatedTask = await store.updateTask(taskId, task.version, {
+      steeringQueue: [...currentSteeringQueue, steeringEntry],
+    });
+
+    // Broadcast event
+    const { createSteeringEvent } = await import('../lib/orchestrator-events.js');
+    const { broadcast } = await import('./events.js');
+    broadcast('task.steering', createSteeringEvent(taskId, message, source));
+
+    return c.json({
+      success: true,
+      taskId,
+      queueLength: updatedTask.steeringQueue?.length || 0,
+    });
+  } catch (error) {
+    console.error('Failed to add steering message:', error);
+    return c.json({ error: 'Failed to add steering message', code: ErrorCode.GATEWAY_ERROR }, 500);
+  }
+});
+
+/**
+ * POST /api/orchestrator/task/:id/followup
+ * Add a follow-up message to be processed after the agent completes all work.
+ * Follow-up messages are checked when there are no more tool calls and no steering messages.
+ */
+app.post('/api/orchestrator/task/:id/followup', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const store = getKanbanStore();
+    const task = await store.getTask(taskId);
+
+    if (!task) {
+      return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+
+    const body = await c.req.json();
+    const { message, source = 'user' as 'user' | 'system' | 'extension' } = body;
+
+    if (!message || typeof message !== 'string') {
+      return c.json({ error: 'Message is required', code: ErrorCode.INVALID_REQUEST }, 400);
+    }
+
+    // Add to follow-up queue
+    const followUpEntry = {
+      message,
+      addedAt: Date.now(),
+      source,
+    };
+
+    const currentFollowUpQueue = task.followUpQueue || [];
+    const updatedTask = await store.updateTask(taskId, task.version, {
+      followUpQueue: [...currentFollowUpQueue, followUpEntry],
+    });
+
+    // Broadcast event
+    const { createFollowUpEvent } = await import('../lib/orchestrator-events.js');
+    const { broadcast } = await import('./events.js');
+    broadcast('task.followup', createFollowUpEvent(taskId, message, source));
+
+    return c.json({
+      success: true,
+      taskId,
+      queueLength: updatedTask.followUpQueue?.length || 0,
+    });
+  } catch (error) {
+    console.error('Failed to add follow-up message:', error);
+    return c.json({ error: 'Failed to add follow-up message', code: ErrorCode.GATEWAY_ERROR }, 500);
+  }
+});
+
+/**
+ * GET /api/orchestrator/task/:id/queues
+ * Get current steering and follow-up queue status.
+ */
+app.get('/api/orchestrator/task/:id/queues', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const store = getKanbanStore();
+    const task = await store.getTask(taskId);
+
+    if (!task) {
+      return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+
+    return c.json({
+      success: true,
+      taskId,
+      steeringQueue: task.steeringQueue || [],
+      followUpQueue: task.followUpQueue || [],
+    });
+  } catch (error) {
+    console.error('Failed to get queues:', error);
+    return c.json({ error: 'Failed to get queues', code: ErrorCode.GATEWAY_ERROR }, 500);
+  }
+});
+
+/**
+ * DELETE /api/orchestrator/task/:id/queues
+ * Clear steering and/or follow-up queues.
+ */
+app.delete('/api/orchestrator/task/:id/queues', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const store = getKanbanStore();
+    const task = await store.getTask(taskId);
+
+    if (!task) {
+      return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+
+    const { clear = 'all' as 'all' | 'steering' | 'followup' } = c.req.query();
+
+    const updates: Record<string, unknown> = {};
+    if (clear === 'all' || clear === 'steering') {
+      updates.steeringQueue = [];
+    }
+    if (clear === 'all' || clear === 'followup') {
+      updates.followUpQueue = [];
+    }
+
+    const updatedTask = await store.updateTask(taskId, task.version, updates);
+
+    return c.json({
+      success: true,
+      taskId,
+      steeringQueueLength: updatedTask.steeringQueue?.length || 0,
+      followUpQueueLength: updatedTask.followUpQueue?.length || 0,
+    });
+  } catch (error) {
+    console.error('Failed to clear queues:', error);
+    return c.json({ error: 'Failed to clear queues', code: ErrorCode.GATEWAY_ERROR }, 500);
+  }
+});
+
+/**
+ * POST /api/orchestrator/task/:id/hooks
+ * Configure tool execution hooks for a task.
+ * Hooks are stored in task metadata and applied by the orchestrator.
+ */
+app.post('/api/orchestrator/task/:id/hooks', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const store = getKanbanStore();
+    const task = await store.getTask(taskId);
+
+    if (!task) {
+      return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+
+    const body = await c.req.json();
+    const { beforeToolCall, afterToolCall } = body as {
+      beforeToolCall?: { enabled: boolean; blockedTools?: string[] };
+      afterToolCall?: { enabled: boolean; auditOnly?: boolean };
+    };
+
+    const currentHooks = (task.metadata?.hooks as any) || {};
+    const updatedHooks: any = { ...currentHooks };
+
+    if (beforeToolCall) {
+      updatedHooks.beforeToolCall = beforeToolCall;
+    }
+    if (afterToolCall) {
+      updatedHooks.afterToolCall = afterToolCall;
+    }
+
+    const updatedTask = await store.updateTask(taskId, task.version, {
+      metadata: {
+        ...task.metadata,
+        hooks: updatedHooks,
+      },
+    });
+
+    return c.json({
+      success: true,
+      taskId,
+      hooks: updatedTask.metadata?.hooks,
+    });
+  } catch (error) {
+    console.error('Failed to configure hooks:', error);
+    return c.json({ error: 'Failed to configure hooks', code: ErrorCode.GATEWAY_ERROR }, 500);
+  }
+});
+
+/**
+ * GET /api/orchestrator/task/:id/hooks
+ * Get current tool execution hook configuration for a task.
+ */
+app.get('/api/orchestrator/task/:id/hooks', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const store = getKanbanStore();
+    const task = await store.getTask(taskId);
+
+    if (!task) {
+      return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+
+    return c.json({
+      success: true,
+      taskId,
+      hooks: task.metadata?.hooks || null,
+    });
+  } catch (error) {
+    console.error('Failed to get hooks:', error);
+    return c.json({ error: 'Failed to get hooks', code: ErrorCode.GATEWAY_ERROR }, 500);
+  }
+});
+
+/**
+ * POST /api/orchestrator/task/:id/hooks/test
+ * Test tool execution hooks without actual tool execution.
+ */
+app.post('/api/orchestrator/task/:id/hooks/test', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const store = getKanbanStore();
+    const task = await store.getTask(taskId);
+
+    if (!task) {
+      return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+
+    const body = await c.req.json();
+    const { toolName, args } = body as { toolName: string; args?: unknown };
+
+    if (!toolName) {
+      return c.json({ error: 'toolName is required', code: ErrorCode.INVALID_REQUEST }, 400);
+    }
+
+    const hooks = (task.metadata?.hooks as any) || {};
+    const beforeHook = hooks.beforeToolCall;
+
+    let blockResult: { blocked: boolean; reason?: string } = { blocked: false };
+
+    if (beforeHook?.enabled && beforeHook.blockedTools?.includes(toolName)) {
+      blockResult = { blocked: true, reason: `Tool '${toolName}' is blocked by hook configuration` };
+    }
+
+    return c.json({
+      success: true,
+      taskId,
+      toolName,
+      wouldBeBlocked: blockResult.blocked,
+      blockReason: blockResult.reason,
+      hooksConfig: hooks,
+    });
+  } catch (error) {
+    console.error('Failed to test hooks:', error);
+    return c.json({ error: 'Failed to test hooks', code: ErrorCode.GATEWAY_ERROR }, 500);
+  }
+});
+
+/**
+ * GET /api/orchestrator/task/:id/tree
+ * Get the session tree structure for a task.
+ * Returns all sessions associated with this task.
+ */
+app.get('/api/orchestrator/task/:id/tree', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const store = getKanbanStore();
+    const task = await store.getTask(taskId);
+
+    if (!task) {
+      return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+
+    // Get all sessions for this task from the gateway
+    const { getSessionsForTask } = await import('../services/session-fs-reader.js');
+    const sessions = await getSessionsForTask(taskId);
+
+    // Build tree from session data
+    const tree = sessions.map(s => ({
+      sessionKey: s.sessionKey,
+      label: s.label,
+      status: s.status,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+      parentId: (s as any).parentId,
+      taskId: s.taskId,
+    }));
+
+    return c.json({
+      success: true,
+      taskId,
+      tree,
+      currentSession: task.run?.sessionKey,
+    });
+  } catch (error) {
+    console.error('Failed to get session tree:', error);
+    return c.json({ error: 'Failed to get session tree', code: ErrorCode.GATEWAY_ERROR }, 500);
+  }
+});
+
+/**
+ * POST /api/orchestrator/task/:id/fork
+ * Create a new fork/branch of the task for alternative exploration.
+ * This creates a new task that shares history up to the current point.
+ */
+app.post('/api/orchestrator/task/:id/fork', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const store = getKanbanStore();
+    const sourceTask = await store.getTask(taskId);
+
+    if (!sourceTask) {
+      return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+
+    const body = await c.req.json();
+    const { title, description } = body as { title?: string; description?: string };
+
+    // Create new task with same configuration but different ID
+    const newTaskId = `fork-${taskId}-${Date.now()}`;
+    const newTask = await store.createTask({
+      title: title || `${sourceTask.title} (fork)`,
+      description: description || sourceTask.description || '',
+      status: sourceTask.status,
+      priority: sourceTask.priority,
+      createdBy: sourceTask.createdBy,
+      labels: sourceTask.labels,
+      metadata: {
+        ...(sourceTask.metadata || {}),
+        forkedFrom: taskId,
+        forkedAt: Date.now(),
+      },
+    });
+
+    // Copy run info if source has one
+    if (sourceTask.run) {
+      await store.updateTask(newTask.id, newTask.version, {
+        run: {
+          ...sourceTask.run,
+          sessionId: `fork-${sourceTask.run.sessionId || ''}`,
+        },
+      });
+    }
+
+    return c.json({
+      success: true,
+      newTaskId: newTask.id,
+      forkedFrom: taskId,
+    });
+  } catch (error) {
+    console.error('Failed to fork task:', error);
+    return c.json({ error: 'Failed to fork task', code: ErrorCode.GATEWAY_ERROR }, 500);
+  }
+});
+
+/**
+ * POST /api/orchestrator/task/:id/switch-session/:sessionKey
+ * Switch the task to use a different session.
+ */
+app.post('/api/orchestrator/task/:id/switch-session/:sessionKey', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const sessionKey = c.req.param('sessionKey');
+    const store = getKanbanStore();
+    const task = await store.getTask(taskId);
+
+    if (!task) {
+      return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+
+    // Update task to point to new session
+    const updatedTask = await store.updateTask(taskId, task.version, {
+      run: {
+        ...task.run,
+        sessionKey,
+        status: 'running' as const,
+        startedAt: Date.now(),
+      },
+    });
+
+    return c.json({
+      success: true,
+      taskId,
+      sessionKey,
+      previousSession: task.run?.sessionKey,
+    });
+  } catch (error) {
+    console.error('Failed to switch session:', error);
+    return c.json({ error: 'Failed to switch session', code: ErrorCode.GATEWAY_ERROR }, 500);
+  }
+});
+
+/**
+ * POST /api/orchestrator/task/:id/compact
+ * Manually trigger context compaction for a task.
+ * Reduces token usage by pruning and summarizing old messages.
+ */
+app.post('/api/orchestrator/task/:id/compact', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const body = await c.req.json().catch(() => ({})) as Record<string, unknown>;
+    const reason = (body.reason as 'manual' | 'threshold' | 'overflow') || 'manual';
+
+    const result = await handleCompactionRequest(taskId, reason);
+
+    if (!result.success) {
+      return c.json({ error: result.error, code: 'COMPACTION_FAILED' }, 500);
+    }
+
+    return c.json({
+      success: true,
+      taskId,
+      pruned: result.pruned,
+    });
+  } catch (error) {
+    console.error('Failed to compact context:', error);
+    return c.json({ error: 'Failed to compact context', code: ErrorCode.GATEWAY_ERROR }, 500);
+  }
+});
+
+/**
+ * GET /api/orchestrator/task/:id/compaction-status
+ * Check if a task's context needs compaction.
+ */
+app.get('/api/orchestrator/task/:id/compaction-status', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const result = await needsCompaction(taskId);
+
+    return c.json({
+      success: true,
+      taskId,
+      needsCompaction: result.needsCompaction,
+      currentTokens: result.currentTokens,
+      threshold: result.threshold,
+    });
+  } catch (error) {
+    console.error('Failed to check compaction status:', error);
+    return c.json({ error: 'Failed to check compaction status', code: ErrorCode.GATEWAY_ERROR }, 500);
+  }
 });

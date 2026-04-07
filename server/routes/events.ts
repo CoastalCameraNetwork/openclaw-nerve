@@ -11,12 +11,23 @@
  * - ping            — Keep-alive (every 30s)
  * - agent.signal    — Structured agent signal (status, blocker, handoff)
  * - task.blocked    — Task blocked, needs input
+ * - task.start      — Task execution started
+ * - task.end        — Task execution completed
+ * - agent.start     — Agent session started
+ * - agent.end       — Agent session completed
+ * - agent.turn.start — Agent turn started
+ * - agent.turn.end  — Agent turn completed
+ * - tool.execution.start — Tool execution started
+ * - tool.execution.end   — Tool execution completed
+ * - task.steering   — Steering message added
+ * - task.followup   — Follow-up message added
  */
 
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+import type { OrchestratorEvent } from '../lib/orchestrator-events.js';
 
 const app = new Hono();
 
@@ -25,6 +36,13 @@ const app = new Hono();
 export interface SSEEvent {
   event: string;
   data: unknown;
+  ts: number;
+}
+
+/** Extended SSE payload for typed orchestrator events */
+export interface TypedSSEEvent<T extends string = string> {
+  event: T;
+  data: T extends OrchestratorEvent['type'] ? Extract<OrchestratorEvent, { type: T }> : unknown;
   ts: number;
 }
 
@@ -46,6 +64,11 @@ class SSEBroadcaster extends EventEmitter {
   broadcast(event: string, data: unknown = {}): void {
     this.emit('message', { event, data, ts: Date.now() } satisfies SSEEvent);
   }
+
+  /** Broadcast a typed orchestrator event */
+  broadcastTyped<T extends OrchestratorEvent['type']>(event: T, data: Extract<OrchestratorEvent, { type: T }>): void {
+    this.emit('message', { event, data, ts: Date.now() } as SSEEvent);
+  }
 }
 
 export const broadcaster = SSEBroadcaster.getInstance();
@@ -53,6 +76,14 @@ export const broadcaster = SSEBroadcaster.getInstance();
 /** Convenience: broadcast an event to all connected SSE clients. */
 export function broadcast(event: string, data: unknown = {}): void {
   broadcaster.broadcast(event, data);
+}
+
+/** Convenience: broadcast a typed orchestrator event */
+export function broadcastOrchestratorEvent<T extends OrchestratorEvent['type']>(
+  event: T,
+  data: Extract<OrchestratorEvent, { type: T }>
+): void {
+  broadcaster.broadcastTyped(event, data);
 }
 
 // ── SSE stream ───────────────────────────────────────────────────────
