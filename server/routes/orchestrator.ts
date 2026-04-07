@@ -1570,6 +1570,42 @@ app.get('/api/orchestrator/approvals', rateLimitGeneral, async (c) => {
   return c.json({ approvals: pending });
 });
 
+// GET /api/orchestrator/agents/active - List currently active agent sessions
+app.get('/api/orchestrator/agents/active', rateLimitGeneral, async (c) => {
+  try {
+    const sessionsRes = await fetch('http://localhost:18789/api/sessions?limit=100');
+    if (!sessionsRes.ok) {
+      return c.json({ agents: {} });
+    }
+    const sessionsData = await sessionsRes.json() as { sessions?: Array<{ sessionKey?: string; label?: string; status?: string }> };
+    const sessions = sessionsData.sessions || [];
+
+    // Build active agents map from running sessions
+    const agents: Record<string, { status: string; currentTaskId?: string }> = {};
+    sessions
+      .filter(s => s.status === 'running')
+      .forEach(session => {
+        const sessionKey = session.sessionKey || '';
+        const label = session.label || '';
+        // Extract agent type from session key (format: agent-type:uuid)
+        const agentType = sessionKey.split(':')[0] || 'custom-agent';
+        // Extract task from label (format: orch-taskId-agentType)
+        const taskMatch = label.match(/orch-([^/]+)-/);
+        const taskId = taskMatch ? taskMatch[1] : undefined;
+
+        agents[agentType] = {
+          status: 'running',
+          currentTaskId: taskId,
+        };
+      });
+
+    return c.json({ agents });
+  } catch (error) {
+    console.error('Failed to get active agents:', error);
+    return c.json({ agents: {} });
+  }
+});
+
 // POST /api/orchestrator/approvals/:id/approve
 app.post('/api/orchestrator/approvals/:id/approve', rateLimitGeneral, async (c) => {
   const id = c.req.param('id');

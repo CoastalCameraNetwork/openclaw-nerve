@@ -167,6 +167,7 @@ export function OfficeView({ showGrid = true, animated = true }: OfficeViewProps
   }, [activeAgents, signals]);
 
   const gridSize = useMemo(() => {
+    if (desks.length === 0) return { rows: 1, cols: 4 };
     const maxRow = Math.max(0, ...desks.map(d => d.position.row));
     const maxCol = Math.max(0, ...desks.map(d => d.position.col));
     return { rows: maxRow + 1, cols: Math.max(maxCol + 1, 4) };
