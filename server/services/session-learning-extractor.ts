@@ -11,8 +11,8 @@
  */
 
 import { z } from 'zod';
-import { getMemoryStore } from '../lib/memory-store';
-import { getImprovementBacklog, type Improvement } from '../lib/improvement-backlog';
+import { getMemoryStore } from '../lib/memory-store.js';
+import { getImprovementBacklog, type Improvement } from '../lib/improvement-backlog.js';
 
 export type LearningType =
   | 'correction'

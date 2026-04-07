@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { AuditPipeline, getAuditPipeline, type AuditRequest } from './audit-pipeline';
-import { invokeGatewayTool } from '../lib/gateway-client';
+import { invokeGatewayTool } from '../lib/gateway-client.js';
 
 // Mock gateway client
 vi.mock('../lib/gateway-client', () => ({

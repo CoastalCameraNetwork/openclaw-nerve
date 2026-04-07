@@ -50,7 +50,11 @@ export function useConnectionManager(): ConnectionManagerState {
   const { connectionState, connect, disconnect } = useGateway();
 
   // Demo mode bypasses gateway connection dialog (for E2E tests)
-  const isDemoMode = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('demo-mode') === 'true';
+  // Check both URL params and sessionStorage for demo mode
+  const isDemoMode = typeof window !== 'undefined' && (
+    new URLSearchParams(window.location.search).get('demo-mode') === 'true' ||
+    sessionStorage.getItem('nerve:demo-mode') === 'true'
+  );
   const [dialogOpen, setDialogOpen] = useState(isDemoMode ? false : true);
 
   // Editable connection settings (local state for settings drawer)

@@ -611,6 +611,18 @@ export default function App({ onLogout }: AppProps) {
     return () => mq.removeListener(onChange);
   }, [handleCompactLayoutChange]);
 
+  // Listen for view mode changes from custom events (e.g., Dashboard button in KanbanPanel)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleViewModeChange = (event: CustomEvent<ViewMode>) => {
+      setViewMode(event.detail);
+    };
+
+    window.addEventListener('nerve:setViewMode', handleViewModeChange as EventListener);
+    return () => window.removeEventListener('nerve:setViewMode', handleViewModeChange as EventListener);
+  }, [setViewMode]);
+
   // Handlers for TTS provider/model changes
   const handleTtsProviderChange = useCallback((provider: TTSProvider) => {
     setTtsProvider(provider);

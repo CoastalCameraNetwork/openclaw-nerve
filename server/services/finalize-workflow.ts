@@ -12,9 +12,9 @@
  */
 
 import { z } from 'zod';
-import { getPolishCodeService, type PolishOptions, type PolishReport } from './polish-code';
-import { getSessionLearningExtractor, type Learning } from './session-learning-extractor';
-import { getImprovementBacklog, type Improvement } from '../lib/improvement-backlog';
+import { getPolishCodeService, type PolishOptions, type PolishReport } from './polish-code.js';
+import { getSessionLearningExtractor, type Learning } from './session-learning-extractor.js';
+import { getImprovementBacklog, type Improvement } from '../lib/improvement-backlog.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 

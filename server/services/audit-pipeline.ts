@@ -12,8 +12,8 @@
  */
 
 import { z } from 'zod';
-import { invokeGatewayTool } from '../lib/gateway-client';
-import type { Improvement } from '../lib/improvement-backlog';
+import { invokeGatewayTool } from '../lib/gateway-client.js';
+import type { Improvement } from '../lib/improvement-backlog.js';
 
 export const AuditRequestSchema = z.object({
   filePath: z.string(),
