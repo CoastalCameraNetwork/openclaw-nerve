@@ -45,6 +45,13 @@ src/test/*.js
 # Local review artifacts
 wave-reviews/
 
+# Playwright
+test-results/
+.playwright-mcp/
+
+# Worktrees
+.claude/worktrees/
+
 # Kanban runtime data (legacy in-repo paths)
 server/data/kanban/tasks.json
 server/data/kanban/audit.log
