@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { COLUMN_LABELS, type KanbanTask, type TaskStatus, type TaskPriority } from './types';
 import type { UpdateTaskPayload, VersionConflictError } from './hooks/useKanban';
 import { getTaskPriorityLabel, getTaskPriorityTone, getTaskRunTone, getTaskStatusTone, getTaskPriority, getTaskStatus } from './tone';
+import { PlanPanel } from '../plans/PlanPanel';
 
 /* ── Elapsed time helper ── */
 function formatElapsed(ms: number): string {
@@ -382,6 +383,11 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
                     By: {task.createdBy === 'operator' ? 'Operator' : task.createdBy}
                   </div>
                 </div>
+              </div>
+
+              {/* Plan-First Workflow - Implementation Plan section */}
+              <div className="border rounded-lg overflow-hidden">
+                <PlanPanel taskId={task.id} canEdit={true} canReview={false} />
               </div>
 
               {task.run && (

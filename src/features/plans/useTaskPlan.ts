@@ -5,7 +5,7 @@
  * Supports draft, in-review, approved, and rejected plan states.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 
 export type PlanStatus = 'draft' | 'in-review' | 'approved' | 'rejected';
 
@@ -68,6 +68,11 @@ export function useTaskPlan(taskId: string | null) {
       setLoading(false);
     }
   }, [taskId]);
+
+  // Auto-load plan when taskId changes
+  useEffect(() => {
+    loadPlan();
+  }, [loadPlan]);
 
   const updatePlan = useCallback(async (content: string): Promise<void> => {
     if (!taskId) throw new Error('No task ID');

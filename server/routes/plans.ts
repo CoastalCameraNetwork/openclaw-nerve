@@ -12,7 +12,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { rateLimitGeneral } from '../middleware/rate-limit.js';
-import { getKanbanStore } from '../lib/kanban-store.js';
+import { getKanbanStore, TaskNotFoundError } from '../lib/kanban-store.js';
 
 const app = new Hono();
 
@@ -28,15 +28,18 @@ app.get('/api/plans/:taskId', rateLimitGeneral, async (c) => {
   const taskId = c.req.param('taskId');
   const store = getKanbanStore();
 
-  const task = await store.getTask(taskId);
-  if (!task) {
-    return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+  try {
+    const task = await store.getTask(taskId);
+    return c.json({
+      taskId,
+      plan: task.plan || null,
+    });
+  } catch (err) {
+    if (err instanceof TaskNotFoundError) {
+      return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+    throw err;
   }
-
-  return c.json({
-    taskId,
-    plan: task.plan || null,
-  });
 });
 
 // PUT /api/plans/:taskId - Create/update draft plan
@@ -47,10 +50,15 @@ const updatePlanSchema = z.object({
 app.put('/api/plans/:taskId', rateLimitGeneral, async (c) => {
   const taskId = c.req.param('taskId');
   const store = getKanbanStore();
-  const task = await store.getTask(taskId);
 
-  if (!task) {
-    return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+  let task;
+  try {
+    task = await store.getTask(taskId);
+  } catch (err) {
+    if (err instanceof TaskNotFoundError) {
+      return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+    throw err;
   }
 
   let body: unknown = {};
@@ -86,10 +94,15 @@ app.put('/api/plans/:taskId', rateLimitGeneral, async (c) => {
 app.post('/api/plans/:taskId/submit', rateLimitGeneral, async (c) => {
   const taskId = c.req.param('taskId');
   const store = getKanbanStore();
-  const task = await store.getTask(taskId);
 
-  if (!task) {
-    return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+  let task;
+  try {
+    task = await store.getTask(taskId);
+  } catch (err) {
+    if (err instanceof TaskNotFoundError) {
+      return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+    throw err;
   }
 
   if (!task.plan?.content) {
@@ -115,10 +128,15 @@ app.post('/api/plans/:taskId/submit', rateLimitGeneral, async (c) => {
 app.post('/api/plans/:taskId/approve', rateLimitGeneral, async (c) => {
   const taskId = c.req.param('taskId');
   const store = getKanbanStore();
-  const task = await store.getTask(taskId);
 
-  if (!task) {
-    return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+  let task;
+  try {
+    task = await store.getTask(taskId);
+  } catch (err) {
+    if (err instanceof TaskNotFoundError) {
+      return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+    throw err;
   }
 
   if (!task.plan || task.plan.status !== 'in-review') {
@@ -147,10 +165,15 @@ const rejectPlanSchema = z.object({
 app.post('/api/plans/:taskId/reject', rateLimitGeneral, async (c) => {
   const taskId = c.req.param('taskId');
   const store = getKanbanStore();
-  const task = await store.getTask(taskId);
 
-  if (!task) {
-    return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+  let task;
+  try {
+    task = await store.getTask(taskId);
+  } catch (err) {
+    if (err instanceof TaskNotFoundError) {
+      return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+    throw err;
   }
 
   if (!task.plan || task.plan.status !== 'in-review') {
@@ -192,10 +215,15 @@ app.post('/api/plans/:taskId/reject', rateLimitGeneral, async (c) => {
 app.delete('/api/plans/:taskId', rateLimitGeneral, async (c) => {
   const taskId = c.req.param('taskId');
   const store = getKanbanStore();
-  const task = await store.getTask(taskId);
 
-  if (!task) {
-    return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+  let task;
+  try {
+    task = await store.getTask(taskId);
+  } catch (err) {
+    if (err instanceof TaskNotFoundError) {
+      return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
+    }
+    throw err;
   }
 
   if (!task.plan) {
