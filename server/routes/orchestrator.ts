@@ -26,7 +26,7 @@ import {
 import { getKanbanStore, type TaskActor, type KanbanTask, type AuditEntry } from '../lib/kanban-store.js';
 import { invokeGatewayTool } from '../lib/gateway-client.js';
 import { getSessionTokenUsage } from './tokens.js';
-import { getRecentSessions, getSessionsForTask } from '../services/session-fs-reader.js';
+import { getRecentSessions, getSessionsForTask, type SessionTranscript } from '../services/session-fs-reader.js';
 import { handleCompactionRequest, needsCompaction } from '../services/session-compaction.js';
 
 const app = new Hono();
@@ -309,11 +309,12 @@ app.post('/api/orchestrator/complete/:id', rateLimitGeneral, async (c) => {
     }
 
     // Use stored agent output from metadata (primary source)
-    const agentOutput = (task.metadata?.agentOutput || {}) as Record<string, any>;
+    const agentOutput = (task.metadata?.agentOutput || {}) as Record<string, unknown>;
     let combinedOutput = '';
     for (const [agentName, data] of Object.entries(agentOutput)) {
-      if (data.output) {
-        combinedOutput += `\n\n### ${agentName} Output:\n${data.output}`;
+      const dataObj = data as Record<string, unknown> | undefined;
+      if (dataObj?.output && typeof dataObj.output === 'string') {
+        combinedOutput += `\n\n### ${agentName} Output:\n${dataObj.output}`;
       }
     }
 
@@ -414,7 +415,7 @@ app.post('/api/orchestrator/webhook/session-complete', rateLimitGeneral, async (
     // This ensures agent output is available even after sessions complete
     if (task) {
       try {
-        const existingAgentOutput = (task.metadata?.agentOutput || {}) as Record<string, any>;
+        const existingAgentOutput = (task.metadata?.agentOutput || {}) as Record<string, unknown>;
         const agentKey: string = agentName; // Ensure string type for computed property
         const sessionStatus: 'running' | 'completed' | 'failed' = (status === 'failed' ? 'failed' : status === 'running' ? 'running' : 'completed');
         const updatedAgentOutput = {
@@ -449,9 +450,12 @@ app.post('/api/orchestrator/webhook/session-complete', rateLimitGeneral, async (
       const budgetLimit = task.metadata.maxCostUSD as number;
 
       // Calculate current total cost from agent output
-      const agentOutput = (task.metadata?.agentOutput || {}) as Record<string, any>;
-      const currentCost = Object.values(agentOutput).reduce((sum, data: any) => {
-        return sum + (data.tokens?.cost || 0);
+      const agentOutput = (task.metadata?.agentOutput || {}) as Record<string, unknown>;
+      const currentCost = Object.values(agentOutput).reduce((sum: number, data) => {
+        const dataObj = data as Record<string, unknown> | undefined;
+        const tokens = dataObj?.tokens as Record<string, unknown> | undefined;
+        const cost = typeof tokens?.cost === 'number' ? tokens.cost : 0;
+        return sum + cost;
       }, 0);
 
       // Add the new session's cost if provided
@@ -514,10 +518,13 @@ app.get('/api/orchestrator/sessions', rateLimitGeneral, async (c) => {
     // Get all tasks from kanban to extract sessions from metadata
     const readRaw = async () => {
       const fs = await import('fs');
-      const dataDir = '/root/nerve/server-dist/data/kanban';
-      const filePath = `${dataDir}/tasks.json`;
+      const path = await import('path');
+      const os = await import('os');
+      // Use NERVE_DATA_DIR env var or default to ~/.nerve
+      const dataDir = process.env.NERVE_DATA_DIR || path.join(os.homedir(), '.nerve');
+      const filePath = `${dataDir}/kanban/tasks.json`;
       const raw = await fs.promises.readFile(filePath, 'utf-8');
-      return JSON.parse(raw) as { tasks: Array<any> };
+      return JSON.parse(raw) as { tasks: Array<unknown> };
     };
     const data = await readRaw();
 
@@ -535,19 +542,20 @@ app.get('/api/orchestrator/sessions', rateLimitGeneral, async (c) => {
     }> = [];
 
     // Extract sessions from task metadata (most reliable source)
-    for (const task of data.tasks || []) {
-      const agentOutput = task.metadata?.agentOutput || {};
+    for (const task of (data.tasks || []) as Array<Record<string, unknown>>) {
+      const agentOutput = (task.metadata as Record<string, unknown> | undefined)?.agentOutput || {};
       for (const [agentName, agentData] of Object.entries(agentOutput)) {
         const d = agentData as { output?: string; error?: string; sessionKey?: string; completedAt?: number; status?: string };
+        const taskId = task.id as string;
         sessions.push({
-          sessionKey: d.sessionKey || `orch-${task.id}-${agentName}`,
-          label: `orch-${task.id}-${agentName}`,
+          sessionKey: d.sessionKey || `orch-${taskId}-${agentName}`,
+          label: `orch-${taskId}-${agentName}`,
           status: (d.status as 'running' | 'completed' | 'failed') || 'completed',
           output: d.output,
           error: d.error,
           createdAt: d.completedAt,
           updatedAt: d.completedAt,
-          taskId: task.id,
+          taskId,
           agentName: agentName as string,
           source: 'metadata' as const,
         });
@@ -902,7 +910,7 @@ app.post('/api/orchestrator/task/:id/review', rateLimitGeneral, async (c) => {
     }
 
     // Store review report in task metadata
-    const existingAgentOutput = (task.metadata?.agentOutput || {}) as Record<string, any>;
+    const existingAgentOutput = (task.metadata?.agentOutput || {}) as Record<string, unknown>;
     const updatedTask = await store.updateTask(taskId, task.version, {
       metadata: {
         ...task.metadata,
@@ -942,7 +950,7 @@ app.get('/api/orchestrator/task/:id/review', rateLimitGeneral, async (c) => {
       return c.json({ error: 'Task not found', code: ErrorCode.TASK_NOT_FOUND }, 404);
     }
 
-    const reviewReport = ((task.metadata as any)?.agentOutput?.reviewReport) as any;
+    const reviewReport = ((task.metadata as Record<string, unknown>)?.agentOutput as Record<string, unknown> | undefined)?.reviewReport as Record<string, unknown> | undefined;
 
     if (!reviewReport) {
       return c.json({ error: 'No review report found', code: ErrorCode.NO_REVIEW_REPORT }, 404);
@@ -1072,17 +1080,22 @@ async function buildAgentCosts(tasks: KanbanTask[]): Promise<Array<{ agent: stri
   const agentStats: Record<string, { inputTokens: number; outputTokens: number; cost: number }> = {};
 
   for (const task of tasks) {
-    const agentOutput = (task.metadata?.agentOutput || {}) as Record<string, any>;
+    const agentOutput = (task.metadata?.agentOutput || {}) as Record<string, unknown>;
     for (const [agentName, data] of Object.entries(agentOutput)) {
       if (!agentStats[agentName]) {
         agentStats[agentName] = { inputTokens: 0, outputTokens: 0, cost: 0 };
       }
 
       // If tokens were stored in metadata, use them
-      if (data.tokens) {
-        agentStats[agentName].inputTokens += data.tokens.input || 0;
-        agentStats[agentName].outputTokens += data.tokens.output || 0;
-        agentStats[agentName].cost += data.tokens.cost || 0;
+      const dataObj = data as Record<string, unknown> | undefined;
+      const tokens = dataObj?.tokens as Record<string, unknown> | undefined;
+      if (tokens) {
+        const input = typeof tokens.input === 'number' ? tokens.input : 0;
+        const output = typeof tokens.output === 'number' ? tokens.output : 0;
+        const cost = typeof tokens.cost === 'number' ? tokens.cost : 0;
+        agentStats[agentName].inputTokens += input;
+        agentStats[agentName].outputTokens += output;
+        agentStats[agentName].cost += cost;
       }
     }
   }
@@ -1115,22 +1128,23 @@ app.get('/api/orchestrator/task/:id/history', rateLimitGeneral, async (c) => {
     const auditLog = await store.getAuditLog(taskId);
 
     // Get stored agent output
-    const agentOutput = (task.metadata?.agentOutput || {}) as Record<string, any>;
+    const agentOutput = (task.metadata?.agentOutput || {}) as Record<string, unknown>;
 
     // Build agent list with token usage
     const agents = await Promise.all(
-      Object.entries(agentOutput).map(async ([name, data]: [string, any]) => {
+      Object.entries(agentOutput).map(async ([name, data]) => {
+        const dataObj = data as Record<string, unknown> | undefined;
         // Try to get token usage from session transcript
         const sessionLabel = `orch-${taskId}-${name}`;
         const tokenUsage = await getSessionTokenUsage(sessionLabel);
 
         return {
           name,
-          status: data.status,
-          output: data.output?.substring(0, 5000),
-          error: data.error,
-          completedAt: data.completedAt,
-          sessionKey: data.sessionKey,
+          status: (dataObj?.status as string) || 'unknown',
+          output: (typeof dataObj?.output === 'string' ? dataObj.output : '').substring(0, 5000),
+          error: dataObj?.error as string | undefined,
+          completedAt: dataObj?.completedAt as number | undefined,
+          sessionKey: dataObj?.sessionKey as string | undefined,
           tokens: tokenUsage || undefined,
         };
       })
@@ -1779,8 +1793,8 @@ app.post('/api/orchestrator/task/:id/hooks', rateLimitGeneral, async (c) => {
       afterToolCall?: { enabled: boolean; auditOnly?: boolean };
     };
 
-    const currentHooks = (task.metadata?.hooks as any) || {};
-    const updatedHooks: any = { ...currentHooks };
+    const currentHooks = (task.metadata?.hooks as Record<string, unknown>) || {};
+    const updatedHooks: Record<string, unknown> = { ...currentHooks };
 
     if (beforeToolCall) {
       updatedHooks.beforeToolCall = beforeToolCall;
@@ -1853,8 +1867,8 @@ app.post('/api/orchestrator/task/:id/hooks/test', rateLimitGeneral, async (c) =>
       return c.json({ error: 'toolName is required', code: ErrorCode.INVALID_REQUEST }, 400);
     }
 
-    const hooks = (task.metadata?.hooks as any) || {};
-    const beforeHook = hooks.beforeToolCall;
+    const hooks = (task.metadata?.hooks as Record<string, unknown>) || {};
+    const beforeHook = hooks.beforeToolCall as { enabled?: boolean; blockedTools?: string[] } | undefined;
 
     let blockResult: { blocked: boolean; reason?: string } = { blocked: false };
 
@@ -1902,7 +1916,7 @@ app.get('/api/orchestrator/task/:id/tree', rateLimitGeneral, async (c) => {
       status: s.status,
       createdAt: s.createdAt,
       updatedAt: s.updatedAt,
-      parentId: (s as any).parentId,
+      parentId: (s as SessionTranscript & { parentId?: string }).parentId,
       taskId: s.taskId,
     }));
 
