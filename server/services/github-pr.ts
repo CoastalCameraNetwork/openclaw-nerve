@@ -268,10 +268,9 @@ export async function closePR(prNumber: number): Promise<void> {
 
 /**
  * Complete Git workflow for a task:
- * 1. Create branch
- * 2. Commit changes
- * 3. Push branch
- * 4. Create PR
+ * 1. Commit changes (worktree already on correct branch)
+ * 2. Push branch
+ * 3. Create PR
  */
 export async function completeGitWorkflow(
   taskId: string,
@@ -279,20 +278,23 @@ export async function completeGitWorkflow(
   taskDescription: string,
   workingDir: string
 ): Promise<PRInfo> {
-  // Create branch
-  const branch = await createBranch(taskId, taskTitle, workingDir);
+  // Get the current branch name from the worktree
+  const { stdout: branch } = await execAsync('git branch --show-current', { cwd: workingDir });
+  const branchName = branch.trim();
+
+  console.log(`[git] Working directory ${workingDir} is on branch ${branchName}`);
 
   // Commit changes
   await commitChanges(workingDir, `${taskTitle}\n\nTask: ${taskId}\n${taskDescription?.substring(0, 200) || ''}`);
 
   // Push branch
-  await pushBranch(branch, workingDir);
+  await pushBranch(branchName, workingDir);
 
   // Create PR
   const pr = await createPR(
     taskTitle,
     `**Task:** ${taskId}\n\n${taskDescription || 'No description'}`,
-    branch
+    branchName
   );
 
   return pr;
