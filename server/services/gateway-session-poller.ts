@@ -365,6 +365,7 @@ export async function pollAndPersistSessionOutput(
         if (worktreePath) {
           try {
             const { completeGitWorkflow } = await import('./github-pr.js');
+            console.log(`[session-poller] Calling completeGitWorkflow with worktree: ${worktreePath}`);
             const prInfo = await completeGitWorkflow(taskId, task.title, task.description || '', worktreePath);
             console.log(`[session-poller] Created PR #${prInfo.number} for task ${taskId}`);
 
@@ -380,6 +381,7 @@ export async function pollAndPersistSessionOutput(
                 },
                 status: 'review',
               });
+              console.log(`[session-poller] Updated task ${taskId} with PR info and moved to review`);
             }
 
             // Cleanup worktree
@@ -388,7 +390,9 @@ export async function pollAndPersistSessionOutput(
             console.log(`[session-poller] Cleaned up worktree for task ${taskId}`);
           } catch (gitError) {
             console.error(`[session-poller] Git workflow failed for ${taskId}:`, gitError);
+            console.error(`[session-poller] Error details:`, gitError instanceof Error ? gitError.message : gitError);
             // Don't fail the poll - agent output was captured successfully
+            // Task remains in current status, can be retried manually
           }
         } else {
           console.log(`[session-poller] No worktree path found for task ${taskId}`);

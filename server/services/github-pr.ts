@@ -70,6 +70,8 @@ export async function commitChanges(workingDir: string, message: string): Promis
  * Push branch to GitHub
  */
 export async function pushBranch(branchName: string, workingDir: string): Promise<void> {
+  // Fetch latest main to ensure we're up to date before pushing
+  await execAsync('git fetch origin main', { cwd: workingDir });
   await execAsync(`git push -u origin ${branchName}`, { cwd: workingDir });
 }
 
