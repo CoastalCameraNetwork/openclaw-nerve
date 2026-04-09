@@ -336,8 +336,20 @@ export async function executeTask(
     if (effectiveGateMode !== 'audit-only' && project) {
       // Use 'main' as default branch - projects don't specify branch in registry
       const baseBranch = 'main';
-      worktreePath = await createWorktree(taskId, taskTitle, baseBranch);
+      worktreePath = await createWorktree(taskId, taskTitle, baseBranch, project.localPath);
       console.log(`[orchestrator] Created worktree at ${worktreePath} for task ${taskId}`);
+
+      // Store worktree path in task metadata for git workflow after agent completion
+      const store = getKanbanStore();
+      const task = await store.getTask(taskId);
+      if (task) {
+        await store.updateTask(taskId, task.version, {
+          metadata: {
+            ...task.metadata,
+            worktreePath,
+          },
+        });
+      }
     }
 
     // Phase 2: Spawn agents
@@ -406,6 +418,10 @@ ${h.errors.length ? 'Errors: ' + h.errors.join('; ') : ''}`
     }
 
     // Phase 3: After agents complete - create branch, commit, push, PR (skip for audit-only)
+    // NOTE: This is deferred to the session poller which runs after agent completion.
+    // The agent needs to make changes first, then we commit and create PR.
+    // TODO: Move git workflow to poller or separate endpoint triggered by poller
+    /*
     if (worktreePath && effectiveGateMode !== 'audit-only') {
       console.log(`[orchestrator] Running git workflow for task ${taskId}...`);
 
@@ -445,6 +461,10 @@ ${h.errors.length ? 'Errors: ' + h.errors.join('; ') : ''}`
       await cleanupWorktree(worktreePath);
       console.log(`[orchestrator] Cleaned up worktree for task ${taskId}`);
     }
+    */
+
+    // For now, just return after spawning agents
+    // The session poller will handle agent completion and trigger git workflow
 
     return {
       session_labels: sessionLabels,
@@ -502,12 +522,12 @@ async function spawnAgentSession(
       : prompt;
     
     // Use sessions_spawn tool via gateway
-    // Use 'session' mode for persistent interactive work (not 'run' which expires)
+    // Use 'run' mode for subagent execution (mode='session' requires thread=true which isn't available for subagents)
     const spawnArgs: Record<string, unknown> = {
       task: fullPrompt,
       label: shortLabel,
       runtime: 'subagent',
-      mode: 'session', // Persistent session (doesn't expire after "completion")
+      mode: 'run', // One-shot execution
       thinking: thinking,
       cleanup: 'keep', // Keep session for later inspection
     };

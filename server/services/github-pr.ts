@@ -55,6 +55,14 @@ export async function createBranch(taskId: string, taskTitle: string, workingDir
  */
 export async function commitChanges(workingDir: string, message: string): Promise<void> {
   await execAsync('git add -A', { cwd: workingDir });
+
+  // Check if there are any changes to commit
+  const { stdout: status } = await execAsync('git status --porcelain', { cwd: workingDir });
+  if (!status.trim()) {
+    console.log('[git] No changes to commit, skipping commit');
+    return;
+  }
+
   await execAsync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: workingDir });
 }
 
@@ -302,7 +310,8 @@ export async function completeGitWorkflow(
 export async function createWorktree(
   taskId: string,
   taskTitle: string,
-  baseBranch: string = 'main'
+  baseBranch: string = 'main',
+  repoPath?: string // Optional repository path (defaults to current working directory's repo)
 ): Promise<string> {
   const worktreesDir = '/tmp/nerve-worktrees';
   const timestamp = Date.now();
@@ -312,9 +321,8 @@ export async function createWorktree(
     // Create worktrees directory if it doesn't exist
     await fs.promises.mkdir(worktreesDir, { recursive: true });
 
-    // Get the repository root (assuming we're already in a git repo)
-    const { stdout: repoRoot } = await execAsync('git rev-parse --show-toplevel');
-    const repoRootPath = repoRoot.trim();
+    // Get the repository root - use provided repoPath or detect from current directory
+    const repoRootPath = repoPath || (await execAsync('git rev-parse --show-toplevel')).stdout.trim();
 
     // Create the worktree, checking out the base branch
     // Using -b to create a new branch for this task

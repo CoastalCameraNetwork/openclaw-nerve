@@ -577,7 +577,7 @@ export const OrchestratorDashboard = memo(function OrchestratorDashboard() {
   }
 
   return (
-    <div className="space-y-6 p-6">
+    <div className="space-y-6 p-6 overflow-y-auto h-full">
       {/* Stalled Task Banners */}
       {Array.from(stalledTasks.values()).map(task => (
         <StalledTaskBanner

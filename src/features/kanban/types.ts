@@ -84,6 +84,27 @@ export interface KanbanTask {
 
   // Plan-First Workflow
   plan?: TaskPlan;
+
+  // Orchestrator metadata (agent output, steering queues, etc.)
+  metadata?: {
+    agentOutput?: Record<string, {
+      status: 'completed' | 'failed' | 'running';
+      output?: string;
+      error?: string;
+      sessionKey?: string;
+      completedAt?: number;
+      tokens?: unknown;
+    }>;
+    gate_mode?: 'audit-only' | 'gate-on-write' | 'gate-on-deploy';
+    sequence?: 'parallel' | 'sequential';
+    orchestrator_id?: string;
+    routing?: {
+      rule_id?: string;
+      fallback_used?: boolean;
+      model?: string;
+    };
+    [key: string]: unknown;
+  };
 }
 
 export interface TaskPlan {

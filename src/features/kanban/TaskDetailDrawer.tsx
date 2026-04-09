@@ -429,6 +429,46 @@ export function TaskDetailDrawer({ task, onClose, onUpdate, onDelete, onExecute,
                 </div>
               )}
 
+              {/* Agent Output Section - displays output from orchestrator agents */}
+              {task.metadata?.agentOutput && Object.keys(task.metadata.agentOutput).length > 0 && (
+                <div className="cockpit-note space-y-3">
+                  <h4 className="cockpit-field-label">
+                    <CheckCircle2 size={10} className="mr-1 inline" />
+                    Agent Output
+                  </h4>
+                  <div className="space-y-2">
+                    {Object.entries(task.metadata.agentOutput).map(([agentName, agentData]) => (
+                      <div key={agentName} className="rounded-2xl border border-border/60 bg-background/45 p-3 text-xs">
+                        <div className="mb-2 flex items-center justify-between">
+                          <span className="font-semibold text-foreground">{agentName}</span>
+                          <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[0.6rem] ${
+                            agentData.status === 'completed' ? 'border-green/30 bg-green/8 text-green' :
+                            agentData.status === 'failed' ? 'border-destructive/30 bg-destructive/8 text-destructive' :
+                            'border-yellow/30 bg-yellow/8 text-yellow'
+                          }`}>
+                            {agentData.status === 'running' && <Loader2 size={8} className="animate-spin" />}
+                            {agentData.status.charAt(0).toUpperCase() + agentData.status.slice(1)}
+                          </span>
+                        </div>
+                        {agentData.output && (
+                          <div className="whitespace-pre-wrap rounded-lg border border-border/40 bg-background/60 p-2 text-xs text-foreground">
+                            {agentData.output}
+                          </div>
+                        )}
+                        {agentData.error && (
+                          <div className="mt-2 text-[0.667rem] text-destructive">Error: {agentData.error}</div>
+                        )}
+                        {agentData.completedAt && (
+                          <div className="mt-1 text-[0.6rem] text-muted-foreground">
+                            Completed: {new Date(agentData.completedAt).toLocaleString()}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {task.feedback.length > 0 && (
                 <div className="cockpit-note space-y-3">
                   <h4 className="cockpit-field-label">

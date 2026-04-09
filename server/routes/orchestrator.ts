@@ -650,6 +650,18 @@ app.post('/api/orchestrator/execute/:id', rateLimitGeneral, async (c) => {
     // Move task to in-progress
     await store.executeTask(taskId, {}, 'operator');
 
+    console.log('[orchestrator] Task executed, starting background poll for', taskId);
+
+    // Poll gateway for session output after agents complete (non-blocking)
+    // This captures output since we can't modify gateway to call webhooks
+    const { pollAndPersistSessionOutput } = await import('../services/gateway-session-poller.js');
+
+    // Don't await - let it run in background
+    console.log('[orchestrator] Calling pollAndPersistSessionOutput for', taskId);
+    pollAndPersistSessionOutput(taskId).catch((err) =>
+      console.error('[orchestrator] Background session poll failed:', err)
+    );
+
     return c.json({
       success: true,
       task_id: taskId,
@@ -659,7 +671,10 @@ app.post('/api/orchestrator/execute/:id', rateLimitGeneral, async (c) => {
     });
   } catch (error) {
     console.error('Failed to execute task:', error);
-    return c.json({ error: 'Failed to execute task', code: ErrorCode.GATEWAY_ERROR }, 500);
+    console.error('Error details:', JSON.stringify(error, null, 2));
+    console.error('Error message:', (error as Error)?.message);
+    console.error('Error stack:', (error as Error)?.stack);
+    return c.json({ error: 'Failed to execute task', code: ErrorCode.GATEWAY_ERROR, details: (error as Error)?.message }, 500);
   }
 });
 
@@ -755,6 +770,34 @@ app.get('/api/orchestrator/task/:id/sessions', rateLimitGeneral, async (c) => {
   } catch (error) {
     console.error('Failed to get task sessions:', error);
     return c.json({ error: 'Failed to get task sessions', code: ErrorCode.GATEWAY_ERROR }, 500);
+  }
+});
+
+/**
+ * POST /api/orchestrator/task/:id/poll-output
+ * Manually trigger gateway session polling to capture agent output.
+ * This is used when webhook-based capture is not available.
+ */
+app.post('/api/orchestrator/task/:id/poll-output', rateLimitGeneral, async (c) => {
+  try {
+    const taskId = c.req.param('id');
+    const { pollAndPersistSessionOutput } = await import('../services/gateway-session-poller.js');
+
+    const result = await pollAndPersistSessionOutput(taskId);
+
+    if (!result.success) {
+      return c.json({ error: result.error, code: 'POLL_FAILED' }, 500);
+    }
+
+    return c.json({
+      success: true,
+      taskId,
+      capturedCount: result.capturedCount,
+      agents: result.agents,
+    });
+  } catch (error) {
+    console.error('Failed to poll session output:', error);
+    return c.json({ error: 'Failed to poll session output', code: ErrorCode.GATEWAY_ERROR }, 500);
   }
 });
 
@@ -1161,6 +1204,7 @@ app.get('/api/orchestrator/task/:id/history', rateLimitGeneral, async (c) => {
         createdAt: task.createdAt,
         updatedAt: task.updatedAt,
         assignee: task.assignee,
+        metadata: task.metadata || null,
       },
       agents,
       auditLog: auditLog || [],
@@ -2109,3 +2153,4 @@ app.get('/api/orchestrator/task/:id/compaction-status', rateLimitGeneral, async 
     return c.json({ error: 'Failed to check compaction status', code: ErrorCode.GATEWAY_ERROR }, 500);
   }
 });
+// reload test 11:19:24

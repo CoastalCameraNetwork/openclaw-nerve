@@ -305,6 +305,7 @@ const updateTaskSchema = z.object({
     createdAt: z.number().optional(),
     updatedAt: z.number().optional(),
   }).optional().nullable(),
+  metadata: z.record(z.unknown()).optional().nullable(),
 });
 
 const reorderSchema = z.object({
@@ -518,6 +519,8 @@ app.patch('/api/kanban/tasks/:id', rateLimitGeneral, async (c) => {
     return c.json({ error: 'validation_error', details: 'Invalid JSON body' }, 400);
   }
 
+  console.log('[kanban PATCH] Raw body:', JSON.stringify(body, null, 2).slice(0, 500));
+
   const parsed = updateTaskSchema.safeParse(body);
   if (!parsed.success) {
     return c.json({
@@ -526,12 +529,14 @@ app.patch('/api/kanban/tasks/:id', rateLimitGeneral, async (c) => {
     }, 400);
   }
 
+  console.log('[kanban PATCH] Parsed data metadata:', parsed.data.metadata);
+
   const { version, ...rawPatch } = parsed.data;
 
   // Convert nulls to undefined for optional clearing
   const cleanPatch = Object.fromEntries(
     Object.entries(rawPatch)
-      .filter(([k, v]) => k !== 'run' && v !== undefined)
+      .filter(([k, v]) => v !== undefined)
       .map(([k, v]) => [k, v === null ? undefined : v]),
   ) as Record<string, unknown>;
 
@@ -545,6 +550,22 @@ app.patch('/api/kanban/tasks/:id', rateLimitGeneral, async (c) => {
           code: 'PLAN_NOT_APPROVED',
           planStatus: task.plan.status,
         }, 403);
+      }
+    }
+  }
+
+  // Merge metadata instead of replacing
+  if (cleanPatch.metadata !== undefined) {
+    const task = await store.getTask(id);
+    if (task) {
+      const existingMetadata = task.metadata || {};
+      const newMetadata = cleanPatch.metadata;
+      console.log('[kanban] Metadata merge:', { existing: Object.keys(existingMetadata), incoming: newMetadata, merged: { ...existingMetadata, ...newMetadata } });
+      // If new metadata is null/undefined, clear it; otherwise merge
+      if (newMetadata === null || newMetadata === undefined) {
+        cleanPatch.metadata = undefined;
+      } else {
+        cleanPatch.metadata = { ...existingMetadata, ...newMetadata };
       }
     }
   }
