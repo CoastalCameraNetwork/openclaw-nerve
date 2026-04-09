@@ -364,12 +364,27 @@ export async function pollAndPersistSessionOutput(
         const worktreePath = (task.metadata as any)?.worktreePath;
         if (worktreePath) {
           try {
-            const { completeGitWorkflow } = await import('./github-pr.js');
+            const { completeGitWorkflow, checkMigrationConflicts, checkRouteRegistration } = await import('./github-pr.js');
+
+            // Run verification checks before committing
+            console.log(`[session-poller] Running migration and route checks for task ${taskId}...`);
+            const projectPath = (task.metadata as any)?.projectPath || '/ccn-github/mgmt';
+            const [migrationWarnings, routeWarnings] = await Promise.all([
+              checkMigrationConflicts(worktreePath, projectPath),
+              checkRouteRegistration(worktreePath, projectPath),
+            ]);
+
+            const allWarnings = [...migrationWarnings, ...routeWarnings];
+            if (allWarnings.length > 0) {
+              console.warn(`[session-poller] Found ${allWarnings.length} warnings before git workflow:`);
+              allWarnings.forEach(w => console.warn(`  - ${w}`));
+            }
+
             console.log(`[session-poller] Calling completeGitWorkflow with worktree: ${worktreePath}`);
             const prInfo = await completeGitWorkflow(taskId, task.title, task.description || '', worktreePath);
             console.log(`[session-poller] Created PR #${prInfo.number} for task ${taskId}`);
 
-            // Update task with PR info
+            // Update task with PR info and warnings
             const freshTask = await store.getTask(taskId);
             if (freshTask) {
               await store.updateTask(taskId, freshTask.version, {
@@ -380,6 +395,10 @@ export async function pollAndPersistSessionOutput(
                   status: prInfo.status,
                 },
                 status: 'review',
+                metadata: {
+                  ...freshTask.metadata,
+                  gitWarnings: allWarnings,
+                },
               });
               console.log(`[session-poller] Updated task ${taskId} with PR info and moved to review`);
             }

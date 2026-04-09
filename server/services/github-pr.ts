@@ -8,7 +8,6 @@ import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { invokeGatewayTool } from '../lib/gateway-client.js';
 
 const execAsync = promisify(exec);
 
@@ -379,4 +378,152 @@ export async function cleanupWorktree(worktreePath: string): Promise<void> {
       console.error(`Failed to cleanup worktree at ${worktreePath}:`, rmError);
     }
   }
+}
+
+/**
+ * Check for potential migration number conflicts in the mgmt repo.
+ * Scans existing migrations and returns warnings if new migrations would conflict.
+ *
+ * @param worktreePath - Path to the worktree to check
+ * @param projectPath - Path to the project root (mgmt repo)
+ * @returns Array of warning messages, empty if no conflicts
+ */
+export async function checkMigrationConflicts(
+  worktreePath: string,
+  projectPath: string
+): Promise<string[]> {
+  const warnings: string[] = [];
+
+  try {
+    // Find all existing migration files in the project
+    const migrationsGlob = await execAsync(
+      `find "${projectPath}" -path '*/db/migrations/*.sql' -type f 2>/dev/null || echo ""`,
+      { cwd: worktreePath }
+    );
+
+    const migrationFiles = migrationsGlob.stdout
+      .split('\n')
+      .filter((f) => f.trim() && f.endsWith('.sql'));
+
+    // Extract migration numbers (e.g., 0008 from 0008_migration_name.sql)
+    const migrationNumbers = new Set<string>();
+    for (const file of migrationFiles) {
+      const basename = path.basename(file);
+      const match = basename.match(/^(\d{4})_/);
+      if (match) {
+        migrationNumbers.add(match[1]);
+      }
+    }
+
+    console.log(`[git] Found ${migrationNumbers.size} existing migrations: ${Array.from(migrationNumbers).sort().join(', ')}`);
+
+    // Check for uncommitted new migration files in the worktree
+    const { stdout: uncommittedMigrations } = await execAsync(
+      'git status --porcelain -- "*.sql" 2>/dev/null || echo ""',
+      { cwd: worktreePath }
+    );
+
+    const newMigrations = uncommittedMigrations
+      .split('\n')
+      .filter((line) => {
+        // Lines starting with '?' are untracked, 'A' or 'M' are staged/modified
+        const status = line.substring(0, 2).trim();
+        return (status === '?' || status === 'A' || status === 'M') &&
+               line.includes('migration') &&
+               line.endsWith('.sql');
+      });
+
+    for (const migrationLine of newMigrations) {
+      // Extract filename from git status output (format: "?? path/to/file.sql")
+      const filePath = migrationLine.substring(2).trim();
+      const basename = path.basename(filePath);
+      const match = basename.match(/^(\d{4})_/);
+
+      if (match) {
+        const num = match[1];
+        if (migrationNumbers.has(num)) {
+          warnings.push(
+            `MIGRATION CONFLICT: Migration ${basename} uses number ${num} which already exists. ` +
+            `Consider renumbering to ${String(parseInt(num) + 1).padStart(4, '0')}_*`
+          );
+        }
+      }
+    }
+
+    if (warnings.length > 0) {
+      console.warn('[git] Migration conflict warnings:', warnings);
+    }
+  } catch (error) {
+    console.error('[git] Failed to check migration conflicts:', error);
+  }
+
+  return warnings;
+}
+
+/**
+ * Check if new routes are properly registered in the Fastify server.
+ * Scans for new route files and verifies they're imported in server.ts.
+ *
+ * @param worktreePath - Path to the worktree to check
+ * @param projectPath - Path to the project root
+ * @returns Array of warning messages, empty if all routes registered
+ */
+export async function checkRouteRegistration(
+  worktreePath: string,
+  projectPath: string
+): Promise<string[]> {
+  const warnings: string[] = [];
+
+  try {
+    // Read server.ts to find existing route imports
+    const serverPath = path.join(projectPath, 'server', 'server.ts');
+    const serverContent = await fs.promises.readFile(serverPath, 'utf-8');
+
+    // Find all route imports (patterns like: import ... from './routes/xxx')
+    const routeImportRegex = /import\s+.*?\s+from\s+['"]\.\/routes\/([^'"]+)['"]/g;
+    const registeredRoutes = new Set<string>();
+    let match;
+
+    while ((match = routeImportRegex.exec(serverContent)) !== null) {
+      registeredRoutes.add(match[1]);
+    }
+
+    console.log(`[git] Found ${registeredRoutes.size} registered routes: ${Array.from(registeredRoutes).join(', ')}`);
+
+    // Find new route files in the worktree
+    const { stdout: routeFiles } = await execAsync(
+      'find server/routes -name "*.ts" -type f 2>/dev/null | grep -v ".test.ts" | grep -v ".d.ts" || echo ""',
+      { cwd: worktreePath }
+    );
+
+    const routeFileList = routeFiles
+      .split('\n')
+      .filter((f) => f.trim());
+
+    for (const routeFile of routeFileList) {
+      const basename = path.basename(routeFile, '.ts');
+      if (basename === 'server' || basename === 'index') {
+        continue; // Skip server.ts and index files
+      }
+
+      if (!registeredRoutes.has(basename)) {
+        // Check if it's a known built-in route that doesn't need registration
+        const builtinRoutes = ['app', 'index', 'types', 'health'];
+        if (!builtinRoutes.includes(basename)) {
+          warnings.push(
+            `ROUTE NOT REGISTERED: ${basename}.ts exists but is not imported in server.ts. ` +
+            `Add: import { ${basename}Routes } from './routes/${basename}'; app.register(${basename}Routes);`
+          );
+        }
+      }
+    }
+
+    if (warnings.length > 0) {
+      console.warn('[git] Route registration warnings:', warnings);
+    }
+  } catch (error) {
+    console.error('[git] Failed to check route registration:', error);
+  }
+
+  return warnings;
 }
