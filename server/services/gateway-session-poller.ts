@@ -206,6 +206,7 @@ export async function pollAndPersistSessionOutput(
       });
 
       console.log('[session-poller] Matching sessions:', matchingSessions.length);
+      console.log('[session-poller] Matching session details:', matchingSessions.map(s => ({ label: s.label, key: s.key, status: s.status })));
 
       if (matchingSessions.length === 0) {
         // No sessions yet - wait and retry
@@ -222,13 +223,16 @@ export async function pollAndPersistSessionOutput(
       }
 
       // Check if any matching sessions are completed
-      const completedSessions = matchingSessions.filter(s => s.status === 'done');
+      // Also accept sessions without explicit 'done' status if they have endedAt
+      const completedSessions = matchingSessions.filter(s =>
+        s.status === 'done' || s.endedAt !== undefined
+      );
       console.log('[session-poller] Completed sessions:', completedSessions.length);
 
       if (completedSessions.length === 0) {
         // Sessions exist but none completed yet - wait and retry
         if (attempt < MAX_RETRIES) {
-          const pendingStatuses = matchingSessions.map(s => `${s.label}:${s.status}`).join(', ');
+          const pendingStatuses = matchingSessions.map(s => `${s.label}:${s.status}:endedAt=${s.endedAt}`).join(', ');
           console.log(`[session-poller] Sessions still running (${pendingStatuses}), waiting ${RETRY_DELAY_MS}ms before retry...`);
           await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
           continue;
