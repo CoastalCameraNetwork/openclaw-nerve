@@ -305,7 +305,7 @@ const updateTaskSchema = z.object({
     createdAt: z.number().optional(),
     updatedAt: z.number().optional(),
   }).optional().nullable(),
-  metadata: z.record(z.unknown()).optional().nullable(),
+  metadata: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
 const reorderSchema = z.object({

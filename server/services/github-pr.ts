@@ -306,9 +306,14 @@ export async function completeGitWorkflow(
  * Create a git worktree for isolated task execution.
  * Worktrees are created under /tmp/nerve-worktrees/task-{taskId}-{timestamp}
  *
+ * IMPORTANT: Fetches latest origin/main before creating worktree to ensure
+ * the task branches from the most recent main, avoiding conflicts with
+ * recently merged PRs.
+ *
  * @param taskId - Unique task identifier
  * @param taskTitle - Task title for reference
  * @param baseBranch - Base branch to checkout (default: 'main')
+ * @param repoPath - Optional repository path (defaults to current working directory's repo)
  * @returns Path to the created worktree
  */
 export async function createWorktree(
@@ -328,14 +333,18 @@ export async function createWorktree(
     // Get the repository root - use provided repoPath or detect from current directory
     const repoRootPath = repoPath || (await execAsync('git rev-parse --show-toplevel')).stdout.trim();
 
+    // CRITICAL: Fetch latest origin/main to avoid branching from stale main
+    console.log(`[git] Fetching latest origin/${baseBranch} before creating worktree...`);
+    await execAsync(`git fetch origin ${baseBranch}`, { cwd: repoRootPath });
+
     // Create the worktree, checking out the base branch
     // Using -b to create a new branch for this task
     const branchName = `task/${taskId}`;
-    await execAsync(`git worktree add -b ${branchName} "${worktreePath}" ${baseBranch}`, {
+    await execAsync(`git worktree add -b ${branchName} "${worktreePath}" origin/${baseBranch}`, {
       cwd: repoRootPath,
     });
 
-    console.log(`Created worktree at ${worktreePath} for task ${taskId} on branch ${branchName}`);
+    console.log(`Created worktree at ${worktreePath} for task ${taskId} on branch ${branchName} (from origin/${baseBranch})`);
     return worktreePath;
   } catch (error) {
     console.error(`Failed to create worktree for task ${taskId}:`, error);
