@@ -899,6 +899,34 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
 
     const task = await store.executeTask(id, parsed.data, 'operator');
 
+    // For gate-on-write/deploy modes, create a worktree for isolated execution
+    const gateMode = (task.metadata as any)?.gate_mode;
+    let worktreePath: string | undefined;
+
+    if ((gateMode === 'gate-on-write' || gateMode === 'gate-on-deploy') && task.labels?.includes('project:mgmt')) {
+      try {
+        const { createWorktree } = await import('../services/github-pr.js');
+        const baseBranch = 'main';
+        worktreePath = await createWorktree(id, task.title, baseBranch, '/ccn-github/mgmt');
+        console.log(`[kanban] Created worktree at ${worktreePath} for gate-mode task ${id}`);
+
+        // Store worktree path in task metadata for git workflow after completion
+        const freshTask = await store.getTask(id);
+        if (freshTask) {
+          await store.updateTask(id, freshTask.version, {
+            metadata: {
+              ...freshTask.metadata,
+              worktreePath,
+              projectPath: '/ccn-github/mgmt',
+            },
+          });
+        }
+      } catch (worktreeError) {
+        console.error(`[kanban] Failed to create worktree for task ${id}:`, worktreeError);
+        // Continue without worktree - git workflow will be skipped
+      }
+    }
+
     // Spawn agent session via gateway (fire-and-forget)
     const taskDescription = task.description || task.title;
     const runSessionKey = task.run?.sessionKey;
@@ -918,6 +946,11 @@ app.post('/api/kanban/tasks/:id/execute', rateLimitGeneral, async (c) => {
     if (model) spawnArgs.model = model;
     const thinking = task.thinking || config.defaultThinking;
     if (thinking) spawnArgs.thinking = thinking;
+
+    // Add working directory hint if worktree was created
+    if (worktreePath) {
+      spawnArgs.workingDirectory = worktreePath;
+    }
 
     invokeGatewayTool('sessions_spawn', spawnArgs)
       .then(async (spawnRaw) => {
