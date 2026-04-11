@@ -194,6 +194,16 @@ function pollSessionCompletion(
 
         console.log(`[kanban] Run completed for task ${taskId} (runKey: ${identity.correlationKey})`);
 
+        // For gate-on-write/deploy tasks, trigger session poller to run git workflow
+        const gateMode = (completedTask.metadata as any)?.gate_mode;
+        if ((gateMode === 'gate-on-write' || gateMode === 'gate-on-deploy') && completedTask.metadata?.worktreePath) {
+          console.log(`[kanban] Gate mode ${gateMode} detected, triggering git workflow for task ${taskId}...`);
+          const { pollAndPersistSessionOutput } = await import('../services/gateway-session-poller.js');
+          pollAndPersistSessionOutput(taskId).catch((pollErr) => {
+            console.error(`[kanban] Git workflow failed for task ${taskId}:`, pollErr);
+          });
+        }
+
         for (const marker of markers) {
           try {
             await store.createProposal({
